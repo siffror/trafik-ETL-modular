@@ -1,0 +1,18 @@
+﻿=== Tree (.py only) from: C:\Users\Player1\Desktop\EC Utbildning\Fördjupning i Pythonprogrammering\trafik-ETL-modular ===
+trafik-ETL-modular
++-- src
+|   +-- trv
+|   |   +-- __init__.py
+|   |   +-- client.py
+|   |   +-- config.py
+|   |   +-- endpoints.py
+|   |   +-- load_sqlite.py
+|   |   +-- transform.py
+|   |   -- utils.py
+|   +-- utils
+|   |   +-- error_handler.py
+|   |   -- notifier.py
+|   +-- __init__.py
+|   +-- cli.py
+|   -- logger.py
+-- __init__.py
