@@ -1,4 +1,3 @@
-# src/app/etl_runner.py
 import os
 import time
 import sqlite3
@@ -10,21 +9,14 @@ from typing import List, Dict, Any, Tuple
 from src.trv.client import TRVClient
 
 # --- Read configuration from environment
-API_KEY = os.getenv("TRAFIKVERKET_API_KEY", "")
 BASE_URL = os.getenv("TRAFIKVERKET_URL", "https://api.trafikinfo.trafikverket.se/v2/data.xml")
 
-
-def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
-    t0 = time.time()
-    
-    # Hämta API-nyckel ordentligt med _require_api_key()
-    api_key = _require_api_key()
-
-    print(f"[ETL] Using TRV URL: {BASE_URL}", flush=True)
-    client = TRVClient(api_key=api_key, base_url=BASE_URL, timeout=30)
-
-    payload_xml = _build_query_xml(days_back=days_back).replace("{API_KEY}", api_key)
-    xml_text = client.post(payload_xml)
+def _require_api_key() -> str:
+    """Return API key or raise a clear error if missing."""
+    key = os.getenv("TRAFIKVERKET_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
+    return key
 
 def _build_query_xml(days_back: int = 1) -> str:
     """Build minimal TRV XML query (adjust to your schema)."""
@@ -49,7 +41,6 @@ def _build_query_xml(days_back: int = 1) -> str:
     <INCLUDE>Geometry.WGS84</INCLUDE>
   </QUERY>
 </REQUEST>"""
-
 
 def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
     """Parse TRV XML into list of dicts (adapt tags to your schema)."""
@@ -78,7 +69,6 @@ def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
         })
     return rows
 
-
 def _extract_lat_lon(wgs84: str) -> Tuple[float, float]:
     """Extract (lat, lon) from 'POINT (lon lat)'; return (None, None) if not parsable."""
     try:
@@ -92,7 +82,6 @@ def _extract_lat_lon(wgs84: str) -> Tuple[float, float]:
         pass
     return (None, None)
 
-
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     """Coerce dtypes to what the Streamlit app expects."""
     if "county_no" in df.columns:
@@ -105,12 +94,10 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = df[col].astype("string").str.strip()
     return df
 
-
 def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
     """Fetch from TRV (XML), parse, upsert into SQLite, return summary."""
     t0 = time.time()
 
-    # Fail fast (no tricky inline indentation)
     key = _require_api_key()
 
     url = BASE_URL or "https://api.trafikinfo.trafikverket.se/v2/data.xml"
@@ -183,8 +170,3 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
     pagar = int((df["status"] == "PÅGÅR").sum()) if "status" in df.columns else 0
     kommande = int((df["status"] == "KOMMANDE").sum()) if "status" in df.columns else 0
     return {"rows": int(len(df)), "pagar": pagar, "kommande": kommande, "seconds": round(time.time() - t0, 2)}
-
-
-# Backwards-compat helper
-def _get_api_key() -> str:
-    return os.getenv("TRAFIKVERKET_API_KEY", "")
