@@ -1,6 +1,8 @@
 streamlit
 pandas
 plotly
-pydeck
 streamlit-plotly-events
+pydeck
+requests
 python-dotenv
+shapely
