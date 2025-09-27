@@ -16,14 +16,14 @@ BASE_URL = os.getenv("TRAFIKVERKET_URL", "https://api.trafikinfo.trafikverket.se
 
 def _require_api_key() -> str:
     """Return API key or raise a clear error if missing."""
-    key = os.getenv("TRAFIKVERKET_API_KEY", "") or API_KEY
+    key = (os.getenv("TRAFIKVERKET_API_KEY") or API_KEY or "").strip()
     if not key:
         raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
     return key
 
 
 def _build_query_xml(days_back: int = 1) -> str:
-    """Build a minimal TRV XML query (adjust object/fields to your schema)."""
+    """Build minimal TRV XML query (adjust to your schema)."""
     since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
     return f"""<REQUEST>
   <LOGIN authenticationkey="{{API_KEY}}"/>
@@ -48,18 +48,15 @@ def _build_query_xml(days_back: int = 1) -> str:
 
 
 def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
-    """Parse TRV XML string into a list of dict rows (defensive on missing tags)."""
+    """Parse TRV XML into list of dicts (adapt tags to your schema)."""
     root = ET.fromstring(xml_text)
     rows: List[Dict[str, Any]] = []
-
     for node in root.findall(".//Situation"):
         def text(path: str) -> str:
             el = node.find(path)
             return el.text.strip() if (el is not None and el.text) else ""
-
         wgs84 = text("Geometry/WGS84")
         lat, lon = _extract_lat_lon(wgs84)
-
         rows.append({
             "incident_id": text("Id"),
             "message": text("Message"),
@@ -79,14 +76,13 @@ def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
 
 
 def _extract_lat_lon(wgs84: str) -> Tuple[float, float]:
-    """Extract (lat, lon) from 'POINT (lon lat)'. Returns (None, None) on failure."""
+    """Extract (lat, lon) from 'POINT (lon lat)'; return (None, None) if not parsable."""
     try:
         if "POINT" in wgs84:
-            coords = wgs84[wgs84.find("(") + 1: wgs84.find(")")].strip()
+            coords = wgs84[wgs84.find("(")+1:wgs84.find(")")].strip()
             parts = coords.split()
             if len(parts) == 2:
-                lon = float(parts[0])
-                lat = float(parts[1])
+                lon = float(parts[0]); lat = float(parts[1])
                 return lat, lon
     except Exception:
         pass
@@ -100,17 +96,17 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["latitude", "longitude"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-    for col in ["incident_id", "message", "message_type", "location_descriptor", "road_number", "county_name", "status"]:
+    for col in ["incident_id","message","message_type","location_descriptor","road_number","county_name","status"]:
         if col in df.columns:
             df[col] = df[col].astype("string").str.strip()
     return df
 
 
 def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
-    """Fetch from TRV (XML), parse, upsert into SQLite, and return a small summary dict."""
+    """Fetch from TRV (XML), parse, upsert into SQLite, return summary."""
     t0 = time.time()
 
-    # Guard (no indentation trickiness here)
+    # Fail fast (no tricky inline indentation)
     key = _require_api_key()
 
     url = BASE_URL or "https://api.trafikinfo.trafikverket.se/v2/data.xml"
@@ -122,7 +118,7 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
     payload_xml = _build_query_xml(days_back=days_back).replace("{API_KEY}", key)
     xml_text = client.post(payload_xml)  # TRVClient.post returns XML text
 
-    # Parse XML → DataFrame
+    # Parse XML → rows
     rows = _parse_xml(xml_text)
     df = pd.DataFrame(rows)
     if df.empty:
@@ -130,7 +126,7 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
 
     df = _normalize_df(df)
 
-    # Upsert into SQLite (primary key on incident_id)
+    # Upsert into SQLite (conflict on primary key incident_id)
     con = sqlite3.connect(db_path)
     cur = con.cursor()
     cur.execute("""
@@ -156,12 +152,11 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
         "county_name","county_no","start_time_utc","end_time_utc","modified_time_utc",
         "latitude","longitude","status"
     ]
-
     sql = """
         INSERT INTO incidents (
-            incident_id, message, message_type, location_descriptor, road_number,
-            county_name, county_no, start_time_utc, end_time_utc, modified_time_utc,
-            latitude, longitude, status
+            incident_id,message,message_type,location_descriptor,road_number,
+            county_name,county_no,start_time_utc,end_time_utc,modified_time_utc,
+            latitude,longitude,status
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(incident_id) DO UPDATE SET
             message=excluded.message,
@@ -183,12 +178,7 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
 
     pagar = int((df["status"] == "PÅGÅR").sum()) if "status" in df.columns else 0
     kommande = int((df["status"] == "KOMMANDE").sum()) if "status" in df.columns else 0
-    return {
-        "rows": int(len(df)),
-        "pagar": pagar,
-        "kommande": kommande,
-        "seconds": round(time.time() - t0, 2),
-    }
+    return {"rows": int(len(df)), "pagar": pagar, "kommande": kommande, "seconds": round(time.time() - t0, 2)}
 
 
 # Backwards-compat helper
