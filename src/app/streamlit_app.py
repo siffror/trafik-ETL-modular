@@ -14,7 +14,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.app.etl_runner import run_etl  # after sys.path fix
 
 
 # ===================== APP CONFIG =====================
@@ -192,69 +191,8 @@ df = load_data()
 # ===================== TITLE =====================
 st.title(t("app_title"))
 
-# ===================== SIDEBAR (ETL + FILTERS) =====================
+# ===================== SIDEBAR (FILTERS ONLY) =====================
 with st.sidebar:
-    # --- ETL trigger with Slack diagnostics ---
-    st.header(t("etl_hdr"))
-    if st.button(t("etl_btn"), key="btn_etl_now"):
-        with st.spinner(t("etl_running")):
-            try:
-                # Import here to avoid circular imports on cold start
-                from src.utils.notifier import notify
-
-                # Notify start (no ping here to avoid spam)
-                start_status = notify("ETL started", level="info")
-
-                # Run the ETL job
-                summary = run_etl(DB_PATH, days_back=1)
-
-                # Notify success (no ping here to avoid spam)
-                success_status = notify(
-                    f"ETL finished – {summary['rows']} rows "
-                    f"(Ongoing={summary['pagar']}, Upcoming={summary['kommande']}) "
-                    f"in {summary['seconds']}s",
-                    level="success",
-                )
-
-                # Show success in UI
-                st.success(t("etl_ok",
-                    rows=summary["rows"],
-                    pagar=summary["pagar"],
-                    kommande=summary["kommande"],
-                    seconds=summary["seconds"],
-                ))
-
-                # Minimal Slack diagnostics (never reveals secrets)
-                def _fmt(s: dict) -> str:
-                    if not isinstance(s, dict) or not s.get("configured"):
-                        return "Slack: not configured"
-                    if s.get("sent"):
-                        return f"Slack: sent ✅ (HTTP {s.get('status')})"
-                    err = s.get("error") or "unknown error"
-                    code = s.get("status")
-                    return f"Slack: failed ❌ ({'HTTP '+str(code) if code else ''} {err})"
-
-                st.caption(_fmt(start_status))
-                st.caption(_fmt(success_status))
-
-                # Refresh data after ETL
-                df = load_data()
-
-            except Exception as e:
-                # Notify error (keep signature minimal for compatibility)
-                from src.utils.notifier import notify
-                err_status = notify(f"ETL failed: {e}", level="error")
-
-                st.error(t("etl_err", err=e))
-
-                # Show diagnostics for the error notice
-                if isinstance(err_status, dict) and err_status.get("configured"):
-                    st.caption(
-                        "Slack error notice: " +
-                        (f"HTTP {err_status.get('status')} " if err_status.get("status") else "") +
-                        (err_status.get("error") or "")
-                    )
-
     # --- Filters (explicit keys to avoid duplicate element ids) ---
     st.header(t("filters_hdr"))
 
@@ -293,7 +231,6 @@ with st.sidebar:
     else:
         date_from, date_to = min_date, max_date
 
-    # Sorting and row cap
     sort_col = st.selectbox(
         t("sort_by"),
         LANG[lang]["sort_options"],
@@ -301,6 +238,7 @@ with st.sidebar:
     )
     sort_desc = st.checkbox(t("desc"), value=True, key="flt_desc")
     max_rows = st.slider(t("max_rows"), 20, 500, 100, step=20, key="flt_maxrows")
+
 
 # ===================== FILTER APPLICATION =====================
 f = df.copy()
