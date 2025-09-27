@@ -2,11 +2,11 @@ name: Update trafik.db
 
 on:
   schedule:
-    - cron: "0 0 * * *"     # Run one time / 24 h
-  workflow_dispatch: {}         # så du kan köra manuellt
+    - cron: "0 0 * * *"     # Run once per 24 h
+  workflow_dispatch: {}
 
 permissions:
-  contents: write               # krävs för att pusha trafik.db
+  contents: write
 
 concurrency:
   group: trv-etl
@@ -31,6 +31,35 @@ jobs:
           python -m pip install -U pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+      # ⬇️ SANERA & KOMPILERINGSTEST av etl_runner.py
+      - name: Sanitize & compile etl_runner.py
+        run: |
+          echo "---- lines 90..115 (före) ----"
+          nl -ba src/app/etl_runner.py | sed -n '90,115p'
+          python - <<'PY'
+import pathlib
+p = pathlib.Path('src/app/etl_runner.py')
+b = p.read_bytes()
+# Ta bort icke-brytande mellanslag och ersätt TAB med 4 spaces
+b = b.replace(b'\xc2\xa0', b' ').replace(b'\t', b'    ')
+p.write_bytes(b)
+PY
+          python - <<'PY'
+import py_compile
+py_compile.compile('src/app/etl_runner.py', doraise=True)
+print("compile OK")
+PY
+          echo "---- lines 90..115 (efter) ----"
+          nl -ba src/app/etl_runner.py | sed -n '90,115p'
+
+      # ⬇️ NÄTVERKSCHECK mot Trafikverket
+      - name: DNS/HTTP check to Trafikverket
+        run: |
+          echo "DNS lookup:"
+          getent hosts api.trafikinfo.trafikverket.se || true
+          echo "HTTP HEAD (status kan vara 401/405, det viktiga är anslutning):"
+          curl -sS -I https://api.trafikinfo.trafikverket.se/v2/data.xml || true
+
       - name: Run ETL to build trafik.db
         env:
           PYTHONPATH: .
@@ -38,11 +67,10 @@ jobs:
           TRAFIKVERKET_URL: "https://api.trafikinfo.trafikverket.se/v2/data.xml"
         run: |
           python - <<'PY'
-          from src.app.etl_runner import run_etl
-          print(run_etl("trafik.db", days_back=1))
-          PY
+from src.app.etl_runner import run_etl
+print(run_etl("trafik.db", days_back=1))
+PY
           test -f trafik.db || (echo 'trafik.db missing' && exit 1)
-
 
       - name: Commit & push if changed
         run: |
