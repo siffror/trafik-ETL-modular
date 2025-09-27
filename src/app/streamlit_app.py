@@ -214,6 +214,7 @@ with st.sidebar:
                     seconds=summary["seconds"],
                 ))
 
+                # Minimal Slack diagnostics
                 def _fmt(s):
                     if not s.get("configured"):
                         return "Slack: not configured"
@@ -226,7 +227,7 @@ with st.sidebar:
                 st.caption(_fmt(start_status))
                 st.caption(_fmt(success_status))
 
-                df = load_data()
+                df = load_data()  # refresh after ETL
 
             except Exception as e:
                 from src.utils.notifier import notify
@@ -239,8 +240,7 @@ with st.sidebar:
                         (err_status.get("error") or "")
                     )
 
-    # ------- Filters (fixed: use session_state["_lang"]) -------
-    lang = st.session_state["_lang"]
+    # ------- Filters (use `lang`, not session_state) -------
     st.header(t("filters_hdr"))
     status_val = st.multiselect(t("status"), LANG[lang]["status_options"], default=LANG[lang]["status_options"])
     county_opts = sorted(df["county_name"].dropna().unique()) if not df.empty else []
@@ -261,6 +261,7 @@ with st.sidebar:
     sort_col = st.selectbox(t("sort_by"), LANG[lang]["sort_options"])
     sort_desc = st.checkbox(t("desc"), value=True)
     max_rows = st.slider(t("max_rows"), 20, 500, 100, step=20)
+
 
 
 # ===================== FILTER APPLICATION =====================
