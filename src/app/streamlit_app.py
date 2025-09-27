@@ -233,16 +233,8 @@ success_status = notify(
 
                 df = load_data()  # refresh after ETL
 
-            except Exception as e:
-                from src.utils.notifier import notify
-                err_status = notify(f"ETL failed: {e}", level="error")
-                st.error(t("etl_err", err=e))
-                if err_status.get("configured"):
-                    st.caption(
-                        "Slack error notice: " +
-                        (f"HTTP {err_status.get('status')} " if err_status.get("status") else "") +
-                        (err_status.get("error") or "")
-                    )
+           err_status = notify(f"ETL failed: {e}", level="error", ping=True, ping_user=True)
+
 
     # --- Filters ---
     st.header(t("filters_hdr"))
