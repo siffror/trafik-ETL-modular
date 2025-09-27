@@ -194,21 +194,22 @@ st.title(t("app_title"))
 # ===================== SIDEBAR (ETL + FILTERS) =====================
 with st.sidebar:
     # --- ETL trigger with Slack diagnostics (no extra buttons beyond ETL) ---
-    st.header(t("etl_hdr"))
-    if st.button(t("etl_btn")):
-        with st.spinner(t("etl_running")):
-            try:
-                from src.utils.notifier import notify
-                start_status = notify("ETL started", level="info")
+from src.utils.notifier import notify
 
-                summary = run_etl(DB_PATH, days_back=1)
+# on start
+start_status = notify("ETL started", level="info", ping=False)
 
-                success_status = notify(
-                    f"ETL finished – {summary['rows']} rows "
-                    f"(Ongoing={summary['pagar']}, Upcoming={summary['kommande']}) "
-                    f"in {summary['seconds']}s",
-                    level="success",
-                )
+summary = run_etl(DB_PATH, days_back=1)
+
+# on success
+success_status = notify(
+    f"ETL finished – {summary['rows']} rows "
+    f"(Ongoing={summary['pagar']}, Upcoming={summary['kommande']}) "
+    f"in {summary['seconds']}s",
+    level="success",
+    ping=False
+)
+
 
                 st.success(t("etl_ok",
                     rows=summary["rows"],
