@@ -6,6 +6,7 @@ from src.trv.client import TRVClient
 from src.trv.endpoints import iterate_incidents
 from src.trv.transform import normalize_incidents
 from src.trv.load_sqlite import ensure_schema, upsert_incidents
+from src.utils.notifier import notify
 
 def run_etl(db_path: str = "trafik.db", days_back: int = DEFAULT_DAYS_BACK) -> dict:
     """Run ETL pipeline against TRV API and update local SQLite DB."""
@@ -39,3 +40,12 @@ def run_etl(db_path: str = "trafik.db", days_back: int = DEFAULT_DAYS_BACK) -> d
         "seconds": round(time.time() - t0, 1),
         "db_path": db_path,
     }
+
+def run_etl(...):
+    try:
+        notify("ETL started", level="info")
+        # ... do ETL
+        notify(f"ETL finished with {len(df)} rows ✅", level="success")
+    except Exception as e:
+        notify(f"ETL failed: {e}", level="error")
+        raise
