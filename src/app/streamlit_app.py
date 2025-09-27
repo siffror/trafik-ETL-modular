@@ -202,21 +202,24 @@ with st.sidebar:
     if st.button(t("etl_btn"), key="btn_etl_now"):
         with st.spinner(t("etl_running")):
             try:
-                # Notify start
-                start_status = notifier.notify("ETL started", level="info", ping=False)
+                # Import here to avoid circulars on cold start
+                from src.utils.notifier import notify
+
+                # Notify start (no ping here to avoid spam)
+                start_status = notify("ETL started", level="info")
 
                 # Run the ETL job
                 summary = run_etl(DB_PATH, days_back=1)
 
-                # Notify success
-                success_status = notifier.notify(
+                # Notify success (no ping here to avoid spam)
+                success_status = notify(
                     f"ETL finished – {summary['rows']} rows "
                     f"(Ongoing={summary['pagar']}, Upcoming={summary['kommande']}) "
                     f"in {summary['seconds']}s",
                     level="success",
-                    ping=False
                 )
 
+                # Show success in UI
                 st.success(t("etl_ok",
                     rows=summary["rows"],
                     pagar=summary["pagar"],
@@ -224,7 +227,7 @@ with st.sidebar:
                     seconds=summary["seconds"],
                 ))
 
-                # Minimal Slack diagnostics
+                # Minimal Slack diagnostics (never reveals secrets)
                 def _fmt(s: dict) -> str:
                     if not isinstance(s, dict) or not s.get("configured"):
                         return "Slack: not configured"
@@ -241,19 +244,65 @@ with st.sidebar:
                 df = load_data()
 
             except Exception as e:
-                err_status = notifier.notify(
-                    f"ETL failed: {e}",
-                    level="error",
-                    ping=True,
-                    ping_user=True
-                )
+                # Notify error (keep signature minimal for compatibility)
+                from src.utils.notifier import notify
+                err_status = notify(f"ETL failed: {e}", level="error")
+
                 st.error(t("etl_err", err=e))
+
+                # Show diagnostics for the error notice
                 if isinstance(err_status, dict) and err_status.get("configured"):
                     st.caption(
                         "Slack error notice: " +
                         (f"HTTP {err_status.get('status')} " if err_status.get("status") else "") +
                         (err_status.get("error") or "")
                     )
+
+    # --- Filters (explicit keys to avoid duplicate element ids) ---
+    st.header(t("filters_hdr"))
+
+    status_val = st.multiselect(
+        t("status"),
+        LANG[lang]["status_options"],
+        default=LANG[lang]["status_options"],
+        key="flt_status"
+    )
+
+    county_opts = sorted(df["county_name"].dropna().unique()) if not df.empty else []
+    county_val = st.multiselect(
+        t("county"),
+        county_opts,
+        default=list(county_opts),
+        key="flt_county"
+    )
+
+    q = st.text_input(t("search"), value="", key="flt_search")
+    road = st.text_input(t("road"), value="", key="flt_road").strip()
+    only_geo = st.checkbox(t("only_geo"), value=False, key="flt_only_geo")
+
+    # Date range (inclusive start, exclusive end handled later with +1 day)
+    min_dt = df["start_time_utc"].min() if not df.empty else pd.Timestamp.utcnow() - pd.Timedelta(days=7)
+    max_dt = df["start_time_utc"].max() if not df.empty else pd.Timestamp.utcnow()
+    min_date, max_date = min_dt.date(), max_dt.date()
+    date_range = st.date_input(
+        t("date_range"),
+        value=(min_date, max_date),
+        min_value=min_date,
+        max_value=max_date,
+        key="flt_daterange"
+    )
+    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        date_from, date_to = date_range
+    else:
+        date_from, date_to = min_date, max_date
+
+    sort_col = st.selectbox(
+        t("sort_by"),
+        LANG[lang]["sort_options"],
+        key="flt_sortby"
+    )
+    sort_desc = st.checkbox(t("desc"), value=True, key="flt_desc")
+    max_rows = st.slider(t("max_rows"), 20, 500, 100, step=20, key="flt_maxrows")
 
     # --- Filters ---
     st.header(t("filters_hdr"))
