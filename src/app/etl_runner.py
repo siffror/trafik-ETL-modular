@@ -98,7 +98,7 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     for col in ["incident_id","message","message_type","location_descriptor","road_number","county_name","status"]:
         if col in df.columns:
-           df[col] = df[col].astype("string").str.strip()
+            df[col] = df[col].astype("string").str.strip()
     return df
 
 
