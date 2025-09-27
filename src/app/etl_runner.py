@@ -96,11 +96,12 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
     t0 = time.time()
 
     # Use the correct host and your real API key
-    print(f"[ETL] Using TRV URL: {BASE_URL}")
+    print(f"[ETL] Using TRV URL: {BASE_URL}", flush=True)  # helpful in Actions logs
     client = TRVClient(api_key=API_KEY, base_url=BASE_URL, timeout=30)
 
+
     # Build payload and call API
-    payload_xml = _build_query_xml(days_back=days_back).replace("{API_KEY}", _get_api_key())
+    payload_xml = _build_query_xml(days_back=days_back).replace("{API_KEY}", API_KEY)
     xml_text = client.post(payload_xml)  # TRVClient.post must return XML text
 
     # Parse XML → rows
