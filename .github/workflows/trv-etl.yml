@@ -1,17 +1,17 @@
 name: Update trafik.db
 
 on:
-  workflow_dispatch: {}           # kör manuellt
-  push:                           # kör på commit mot main
+  workflow_dispatch: {}
+  push:
     branches: [ main ]
     paths:
       - "src/**"
-      - ".github/workflows/update-trafikdb.yml"
+      - ".github/workflows/trv-etl.yml"
   schedule:
-    - cron: "0 0 * * *"           # dagligen 00:00 UTC
+    - cron: "0 0 * * *"
 
 permissions:
-  contents: write                 # krävs för att committa/pusha trafik.db
+  contents: write
 
 concurrency:
   group: trv-etl
@@ -36,17 +36,15 @@ jobs:
           python -m pip install -U pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # fånga indenteringsfel och syntax innan vi kör något
-      - name: Lint: compile all py (syntax/indent)
-        run: |
-          python -tt -m compileall -q src
+      - name: Lint: compile Python (fail on syntax/indent)
+        run: python -tt -m compileall -q src
 
       - name: Run ETL to build trafik.db
+        shell: bash
         env:
           PYTHONPATH: .
           TRAFIKVERKET_API_KEY: ${{ secrets.TRAFIKVERKET_API_KEY }}
           TRAFIKVERKET_URL: https://api.trafikinfo.trafikverket.se/v2/data.xml
-        shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
