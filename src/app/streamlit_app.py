@@ -192,48 +192,69 @@ df = load_data()
 st.title(t("app_title"))
 
 # ===================== SIDEBAR (ETL + FILTERS) =====================
-with st.sidebar:
-    # --- ETL trigger with Slack diagnostics (no extra buttons beyond ETL) ---
-from src.utils.notifier import notify
+# --- ETL trigger with Slack diagnostics (no extra buttons beyond ETL) ---
+st.header(t("etl_hdr"))
+if st.button(t("etl_btn")):
+    with st.spinner(t("etl_running")):
+        from src.utils.notifier import notify
+        try:
+            # Notify start (no push ping to avoid spam)
+            start_status = notify("ETL started", level="info", ping=False)
 
-# on start
-start_status = notify("ETL started", level="info", ping=False)
+            # Run the ETL job
+            summary = run_etl(DB_PATH, days_back=1)
 
-summary = run_etl(DB_PATH, days_back=1)
+            # Notify success (no push ping to avoid spam)
+            success_status = notify(
+                f"ETL finished – {summary['rows']} rows "
+                f"(Ongoing={summary['pagar']}, Upcoming={summary['kommande']}) "
+                f"in {summary['seconds']}s",
+                level="success",
+                ping=False
+            )
 
-# on success
-success_status = notify(
-    f"ETL finished – {summary['rows']} rows "
-    f"(Ongoing={summary['pagar']}, Upcoming={summary['kommande']}) "
-    f"in {summary['seconds']}s",
-    level="success",
-    ping=False
-)
+            # Show success in UI
+            st.success(t("etl_ok",
+                rows=summary["rows"],
+                pagar=summary["pagar"],
+                kommande=summary["kommande"],
+                seconds=summary["seconds"],
+            ))
 
+            # Minimal Slack diagnostics (never reveals secrets)
+            def _fmt(s: dict) -> str:
+                if not s.get("configured"):
+                    return "Slack: not configured"
+                if s.get("sent"):
+                    return f"Slack: sent ✅ (HTTP {s.get('status')})"
+                err = s.get("error") or "unknown error"
+                code = s.get("status")
+                return f"Slack: failed ❌ ({'HTTP '+str(code) if code else ''} {err})"
 
-                st.success(t("etl_ok",
-                    rows=summary["rows"],
-                    pagar=summary["pagar"],
-                    kommande=summary["kommande"],
-                    seconds=summary["seconds"],
-                ))
+            st.caption(_fmt(start_status))
+            st.caption(_fmt(success_status))
 
-                # Minimal Slack diagnostics (never reveals secrets)
-                def _fmt(s: dict) -> str:
-                    if not s.get("configured"):
-                        return "Slack: not configured"
-                    if s.get("sent"):
-                        return f"Slack: sent ✅ (HTTP {s.get('status')})"
-                    err = s.get("error") or "unknown error"
-                    code = s.get("status")
-                    return f"Slack: failed ❌ ({'HTTP '+str(code) if code else ''} {err})"
+            # Refresh data after ETL
+            df = load_data()
 
-                st.caption(_fmt(start_status))
-                st.caption(_fmt(success_status))
+        except Exception as e:
+            # Notify error with pings so you actually get push notifications
+            err_status = notify(
+                f"ETL failed: {e}",
+                level="error",
+                ping=True,          # <!here> to alert the channel
+                ping_user=True      # <@USERID> if SLACK_NOTIFY_USER is set
+            )
 
-                df = load_data()  # refresh after ETL
+            st.error(t("etl_err", err=e))
 
-           err_status = notify(f"ETL failed: {e}", level="error", ping=True, ping_user=True)
+            # Show diagnostics for the error post
+            if err_status.get("configured"):
+                st.caption(
+                    "Slack error notice: " +
+                    (f"HTTP {err_status.get('status')} " if err_status.get("status") else "") +
+                    (err_status.get("error") or "")
+                )
 
 
     # --- Filters ---
