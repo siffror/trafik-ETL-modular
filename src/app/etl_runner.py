@@ -1,6 +1,6 @@
 # src/app/etl_runner.py
 import os
-import time  
+import time
 import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta, timezone
@@ -9,13 +9,12 @@ from typing import List, Dict, Any, Tuple
 
 from src.trv.client import TRVClient
 
-# --- NEW: read configuration from environment
-API_KEY  = os.getenv("TRAFIKVERKET_API_KEY", "")
+# --- Read configuration from environment
+API_KEY = os.getenv("TRAFIKVERKET_API_KEY", "")
 BASE_URL = os.getenv(
     "TRAFIKVERKET_URL",
     "https://api.trafikinfo.trafikverket.se/v2/data.xml"  # correct host
 )
-
 
 def _build_query_xml(days_back: int = 1) -> str:
     """Build minimal TRV XML query (adjust to your schema)."""
@@ -96,18 +95,19 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
     """Fetch from TRV (XML), parse, upsert into SQLite, return summary."""
     t0 = time.time()
-    
+
+    # Validate required configuration (fail fast)
     if not API_KEY:
         raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
 
-    # Use the correct host and your real API key
-    print(f"[ETL] Using TRV URL: {BASE_URL}", flush=True)  # helpful in Actions logs
-    client = TRVClient(api_key=API_KEY, base_url=BASE_URL, timeout=30)
+    url = BASE_URL or "https://api.trafikinfo.trafikverket.se/v2/data.xml"
+    print(f"[ETL] Using TRV URL: {url}", flush=True)
 
+    client = TRVClient(api_key=API_KEY, base_url=url, timeout=30)
 
     # Build payload and call API
     payload_xml = _build_query_xml(days_back=days_back).replace("{API_KEY}", API_KEY)
-    xml_text = client.post(payload_xml)  # TRVClient.post must return XML text
+    xml_text = client.post(payload_xml)  # TRVClient.post returns XML text
 
     # Parse XML → rows
     rows = _parse_xml(xml_text)
