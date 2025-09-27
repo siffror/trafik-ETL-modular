@@ -1,7 +1,6 @@
 # src/app/etl_runner.py
 import os
 import sqlite3
-import time
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 from xml.etree import ElementTree as ET
@@ -9,9 +8,13 @@ from typing import List, Dict, Any, Tuple
 
 from src.trv.client import TRVClient
 
-# --- config pulled from env with correct default URL ---
+# --- NEW: read configuration from environment
 API_KEY  = os.getenv("TRAFIKVERKET_API_KEY", "")
-BASE_URL = os.getenv("TRAFIKVERKET_URL", "https://api.trafikinfo.trafikverket.se/v2/data.xml")  # correct host
+BASE_URL = os.getenv(
+    "TRAFIKVERKET_URL",
+    "https://api.trafikinfo.trafikverket.se/v2/data.xml"  # correct host
+)
+
 
 def _build_query_xml(days_back: int = 1) -> str:
     """Build minimal TRV XML query (adjust to your schema)."""
