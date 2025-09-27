@@ -560,8 +560,9 @@ else:
             map_style=style_map.get(map_style, "light"),
             tooltip=tooltip,
         ),
-        width="stretch",
+        use_container_width=True,
     )
+
 
 # ===================== TABLE =====================
 st.subheader(t("table_hdr", n=max_rows))
