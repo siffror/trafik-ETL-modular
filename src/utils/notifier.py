@@ -44,30 +44,34 @@ def _safe_post(payload: dict) -> dict:
         logger.error(msg)
         return {"sent": False, "configured": True, "status": None, "error": str(e)}
 
-def notify(text: str, level: str = "info", ping: bool = False, ping_user: bool | None = None) -> dict:
+def notify(text: str, level: str = "info", ping: bool = False, ping_user: bool = False) -> dict:
     """
-    Post a message to Slack and log locally.
-    - ping=True adds '<!here>' to trigger channel notifications.
-    - ping_user=True (or None to use env default) mentions SLACK_NOTIFY_USER if set.
-    Always returns a status dict from _safe_post.
+    Send notification to Slack + log locally.
+    - ping=True adds <!here> mention (channel notification).
+    - ping_user=True adds a specific <@USERID> mention if SLACK_NOTIFY_USER is set.
+    Always returns a status dict.
     """
     emojis = {"info": "ℹ️", "warning": "⚠️", "error": "🚨", "success": "✅"}
     emoji = emojis.get(level, "ℹ️")
 
-    # Build mention prefix to trigger notifications
+    # Build message prefix
     prefix = ""
     if ping:
         prefix += "<!here> "
-    uid = SLACK_NOTIFY_USER if ping_user is None else (SLACK_NOTIFY_USER if ping_user else None)
-    if uid:
+    uid = os.getenv("SLACK_NOTIFY_USER")
+    if ping_user and uid:
         prefix += f"<@{uid}> "
 
     message = f"{emoji} {prefix}{text}"
 
     # Local log
-    (logger.error if level == "error" else logger.warning if level == "warning" else logger.info)(message)
+    if level == "error":
+        logger.error(message)
+    elif level == "warning":
+        logger.warning(message)
+    else:
+        logger.info(message)
 
-    # Slack (mrkdwn=True helps parse mentions consistently)
     return _safe_post({"text": message, "mrkdwn": True})
 
 # Backward-compat alias
