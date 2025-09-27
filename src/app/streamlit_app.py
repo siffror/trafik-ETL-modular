@@ -567,13 +567,15 @@ else:
 # ===================== TABLE =====================
 st.subheader(t("table_hdr", n=max_rows))
 f_sorted = f.sort_values(by=sort_col, ascending=not sort_desc).head(max_rows) if not f.empty else f
+
+# Use use_container_width instead of width="stretch"
 st.dataframe(
     f_sorted[[
         "incident_id","message_type","status","county_name","road_number",
         "location_descriptor","start_time_utc","end_time_utc","modified_time_utc",
         "latitude","longitude"
     ]] if not f_sorted.empty else f_sorted,
-    width="stretch",
+    use_container_width=True,
 )
 
 # ===================== TREND OVER TIME =====================
@@ -591,7 +593,12 @@ if not f.empty:
                 "count": "Antal händelser" if lang=="sv" else "Incidents"},
         title=t("trend_title"),
     )
-    st.plotly_chart(fig_trend, width="stretch")
+    # Replace width="stretch" with use_container_width + config
+    st.plotly_chart(
+        fig_trend,
+        use_container_width=True,
+        config={"displayModeBar": True, "scrollZoom": True}
+    )
 else:
     st.info(t("trend_none"))
 
@@ -606,6 +613,11 @@ if not f.empty and "message_type" in f.columns:
         orientation="h", text=t("types_count"), title=t("types_hdr"),
     )
     fig_types.update_traces(textposition="outside")
-    st.plotly_chart(fig_types, width="stretch")
+    # Replace width="stretch" with use_container_width + config
+    st.plotly_chart(
+        fig_types,
+        use_container_width=True,
+        config={"displayModeBar": True, "scrollZoom": True}
+    )
 else:
     st.info(t("types_none"))
