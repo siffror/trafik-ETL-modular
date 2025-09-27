@@ -98,7 +98,7 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
     t0 = time.time()
     
     if not API_KEY:
-    raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
+        raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
 
     # Use the correct host and your real API key
     print(f"[ETL] Using TRV URL: {BASE_URL}", flush=True)  # helpful in Actions logs
