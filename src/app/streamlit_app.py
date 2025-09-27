@@ -192,15 +192,21 @@ df = load_data()
 st.title(t("app_title"))
 
 # ===================== SIDEBAR (ETL + FILTERS) =====================
+# ===================== SIDEBAR (ETL + FILTERS) =====================
 with st.sidebar:
     # --- ETL trigger with Slack diagnostics ---
     st.header(t("etl_hdr"))
-    if st.button(t("etl_btn")):
+    if st.button(t("etl_btn"), key="btn_etl_now"):
         with st.spinner(t("etl_running")):
             from src.utils.notifier import notify
             try:
+                # Notify start (no push ping to avoid spam)
                 start_status = notify("ETL started", level="info", ping=False)
+
+                # Run the ETL job
                 summary = run_etl(DB_PATH, days_back=1)
+
+                # Notify success (no push ping to avoid spam)
                 success_status = notify(
                     f"ETL finished – {summary['rows']} rows "
                     f"(Ongoing={summary['pagar']}, Upcoming={summary['kommande']}) "
@@ -208,35 +214,118 @@ with st.sidebar:
                     level="success",
                     ping=False
                 )
+
+                # Show success in UI
                 st.success(t("etl_ok",
                     rows=summary["rows"],
                     pagar=summary["pagar"],
                     kommande=summary["kommande"],
                     seconds=summary["seconds"],
                 ))
-                # Slack diagnostics
-                ...
-                df = load_data()  # refresh after ETL
+
+                # Minimal Slack diagnostics (never reveals secrets)
+                def _fmt(s: dict) -> str:
+                    if not isinstance(s, dict) or not s.get("configured"):
+                        return "Slack: not configured"
+                    if s.get("sent"):
+                        return f"Slack: sent ✅ (HTTP {s.get('status')})"
+                    err = s.get("error") or "unknown error"
+                    code = s.get("status")
+                    return f"Slack: failed ❌ ({'HTTP '+str(code) if code else ''} {err})"
+
+                st.caption(_fmt(start_status))
+                st.caption(_fmt(success_status))
+
+                # Refresh data after ETL
+                df = load_data()
+
             except Exception as e:
+                # Notify error with pings so you actually get push notifications
                 err_status = notify(
                     f"ETL failed: {e}",
                     level="error",
-                    ping=True, ping_user=True
+                    ping=True,      # <!here> to alert the channel
+                    ping_user=True  # <@USERID> if SLACK_NOTIFY_USER is set
                 )
                 st.error(t("etl_err", err=e))
-                if err_status.get("configured"):
-                    st.caption("Slack error notice: ...")
+                if isinstance(err_status, dict) and err_status.get("configured"):
+                    st.caption(
+                        "Slack error notice: " +
+                        (f"HTTP {err_status.get('status')} " if err_status.get("status") else "") +
+                        (err_status.get("error") or "")
+                    )
 
-    # --- Filters (must always be defined, even if ETL fails) ---
+    # --- Filters (give explicit keys to avoid duplicate element ids) ---
     st.header(t("filters_hdr"))
-    status_val = st.multiselect(t("status"), LANG[lang]["status_options"],
-                                default=LANG[lang]["status_options"])
+
+    status_val = st.multiselect(
+        t("status"),
+        LANG[lang]["status_options"],
+        default=LANG[lang]["status_options"],
+        key="flt_status"
+    )
+
     county_opts = sorted(df["county_name"].dropna().unique()) if not df.empty else []
-    county_val = st.multiselect(t("county"), county_opts, default=list(county_opts))
-    q = st.text_input(t("search"), "")
-    road = st.text_input(t("road"), "").strip()
-    only_geo = st.checkbox(t("only_geo"), value=False)
-    ...
+    county_val = st.multiselect(
+        t("county"),
+        county_opts,
+        default=list(county_opts),
+        key="flt_county"
+    )
+
+    q = st.text_input(
+        t("search"),
+        value="",
+        key="flt_search"
+    )
+
+    road = st.text_input(
+        t("road"),
+        value="",
+        key="flt_road"
+    ).strip()
+
+    only_geo = st.checkbox(
+        t("only_geo"),
+        value=False,
+        key="flt_only_geo"
+    )
+
+    # Date range (inclusive start, exclusive end via +1 day in filter step)
+    min_dt = df["start_time_utc"].min() if not df.empty else pd.Timestamp.utcnow() - pd.Timedelta(days=7)
+    max_dt = df["start_time_utc"].max() if not df.empty else pd.Timestamp.utcnow()
+    min_date, max_date = min_dt.date(), max_dt.date()
+
+    date_range = st.date_input(
+        t("date_range"),
+        value=(min_date, max_date),
+        min_value=min_date,
+        max_value=max_date,
+        key="flt_daterange"
+    )
+    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        date_from, date_to = date_range
+    else:
+        date_from, date_to = min_date, max_date
+
+    sort_col = st.selectbox(
+        t("sort_by"),
+        LANG[lang]["sort_options"],
+        key="flt_sortby"
+    )
+
+    sort_desc = st.checkbox(
+        t("desc"),
+        value=True,
+        key="flt_desc"
+    )
+
+    max_rows = st.slider(
+        t("max_rows"),
+        min_value=20, max_value=500, value=100, step=20,
+        key="flt_maxrows"
+    )
+
 
 
 
@@ -439,16 +528,18 @@ else:
 st.subheader(t("map_hdr"))
 
 # Map UI controls
-colA, colB, colC = st.columns([1.3, 1, 1])
 with colA:
-    map_mode = st.radio(t("map_mode"), LANG[lang]["map_modes"], horizontal=True)
+    map_mode = st.radio(t("map_mode"), LANG[lang]["map_modes"], horizontal=True, key="map_mode")
 with colB:
-    map_style = st.selectbox(t("map_style"), LANG[lang]["map_styles"], index=0)
+    map_style = st.selectbox(t("map_style"), LANG[lang]["map_styles"], index=0, key="map_style")
 with colC:
     st.toggle(t("map_color_toggle"), key="use_county_colors",
               value=st.session_state.get("use_county_colors", False),
               help=t("map_color_toggle"))
-use_county_colors = st.session_state.get("use_county_colors", False)
+# Sliders:
+point_radius   = st.slider(t("map_point_size"), 2, 20, 8, key="map_point_size")
+heat_intensity = st.slider(t("map_heat_intensity"), 1, 20, 8, key="map_heat_intensity")
+
 
 # Fallback lat/lon by county (used when rows miss geometry)
 COUNTY_CENTER = {
