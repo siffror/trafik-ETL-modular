@@ -1,14 +1,22 @@
+# src/trv/config.py
 import os
-from dotenv import load_dotenv
 
-# Ladda .env automatiskt
-load_dotenv()
+# Try to load .env if running locally
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-TRV_BASE_URL = "https://api.trafikinfo.trafikverket.se/v2/data.json"
-TRV_API_KEY = os.getenv("TRV_API_KEY", "").strip()
+# Streamlit secrets (Cloud)
+try:
+    import streamlit as st
+    TRV_API_KEY = st.secrets.get("TRV_API_KEY", os.getenv("TRV_API_KEY", ""))
+    TRV_BASE_URL = st.secrets.get("TRV_BASE_URL", os.getenv("TRV_BASE_URL", ""))
+except ModuleNotFoundError:
+    # Local dev fallback
+    TRV_API_KEY = os.getenv("TRV_API_KEY", "")
+    TRV_BASE_URL = os.getenv("TRV_BASE_URL", "")
 
-DEFAULT_DAYS_BACK = 1
-DEFAULT_PAGE_SIZE = 500
-
-if not TRV_API_KEY:
-    raise RuntimeError("Saknar TRV_API_KEY i .env eller miljön.")
+# Default config
+DEFAULT_DAYS_BACK = int(os.getenv("DEFAULT_DAYS_BACK", "1"))
