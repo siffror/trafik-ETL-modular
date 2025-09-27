@@ -1,26 +1,26 @@
 # src/app/streamlit_app.py
-import os, json, sqlite3
+import os, json, sqlite3, sys, pathlib
+from itertools import cycle
+
 import pandas as pd
 import streamlit as st
 import plotly.express as px
-from streamlit_plotly_events import plotly_events
-from itertools import cycle
 import plotly.graph_objects as go
+from streamlit_plotly_events import plotly_events
 import pydeck as pdk
 
-# --- import fallback to ensure repo root is on sys.path ---
-import sys, pathlib
-ROOT = pathlib.Path(__file__).resolve().parents[2]  # repo root
+# --- ensure repo root on sys.path so `src.*` imports work both locally and on Cloud
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.app.etl_runner import run_etl
+from src.app.etl_runner import run_etl  # after sys.path fix
 
 # ===================== APP CONFIG =====================
 st.set_page_config(page_title="TRV Incidents Dashboard", layout="wide")
 DB_PATH = os.getenv("TRAFIK_DB_PATH", "trafik.db")
 
-# ===================== i18n (sv/en) — SAFE (no session writes) =====================
+# ===================== i18n (sv/en) — no session writes =====================
 LANG = {
     "sv": {
         "app_title": "TRV Väghändelser – pågår & kommande",
@@ -129,7 +129,7 @@ LANG = {
         "types_none": "No data for incident types.",
         "types_count": "Count",
         "types_type": "Type",
-        "status_options": ["PÅGÅR", "KOMMANDE"],  # data values unchanged
+        "status_options": ["PÅGÅR", "KOMMANDE"],  # keep raw data values
         "sort_options": ["modified_time_utc","start_time_utc","county_name","message_type","road_number"],
         "map_styles": ["light", "dark", "road", "satellite"],
         "lang_label": "Language / Språk",
@@ -137,6 +137,7 @@ LANG = {
 }
 
 def _lang_from_query():
+    """Read ?lang=sv|en from URL (default sv)."""
     try:
         qp = st.query_params
         val = qp.get("lang", "sv")
@@ -149,16 +150,17 @@ lang_qp = _lang_from_query()
 default_idx = LANG_OPTIONS.index(lang_qp) if lang_qp in LANG_OPTIONS else 0
 lang = st.sidebar.selectbox(LANG[lang_qp]["lang_label"], LANG_OPTIONS, index=default_idx, key="lang_select")
 if lang != lang_qp:
-    st.query_params["lang"] = lang  # keep URL in sync
+    st.query_params["lang"] = lang  # keep URL/bookmarks in sync
 
 def t(key, **kwargs):
+    """Translate helper with .format support."""
     s = LANG[lang].get(key, key)
     return s.format(**kwargs) if kwargs else s
 
 # ===================== DATA LOADING =====================
 @st.cache_data(ttl=300)
 def load_data():
-    """Load data from SQLite and normalize types for consistent filtering and plotting."""
+    """Load data from SQLite and normalize types for consistent filtering/plotting."""
     con = sqlite3.connect(DB_PATH)
     query = """
         SELECT incident_id, message, message_type, location_descriptor,
@@ -191,6 +193,7 @@ st.title(t("app_title"))
 
 # ===================== SIDEBAR (ETL + FILTERS) =====================
 with st.sidebar:
+    # --- ETL trigger with Slack diagnostics (no extra buttons beyond ETL) ---
     st.header(t("etl_hdr"))
     if st.button(t("etl_btn")):
         with st.spinner(t("etl_running")):
@@ -214,8 +217,8 @@ with st.sidebar:
                     seconds=summary["seconds"],
                 ))
 
-                # Minimal Slack diagnostics
-                def _fmt(s):
+                # Minimal Slack diagnostics (never reveals secrets)
+                def _fmt(s: dict) -> str:
                     if not s.get("configured"):
                         return "Slack: not configured"
                     if s.get("sent"):
@@ -240,7 +243,7 @@ with st.sidebar:
                         (err_status.get("error") or "")
                     )
 
-    # ------- Filters (use `lang`, not session_state) -------
+    # --- Filters ---
     st.header(t("filters_hdr"))
     status_val = st.multiselect(t("status"), LANG[lang]["status_options"], default=LANG[lang]["status_options"])
     county_opts = sorted(df["county_name"].dropna().unique()) if not df.empty else []
@@ -249,6 +252,7 @@ with st.sidebar:
     road = st.text_input(t("road"), "").strip()
     only_geo = st.checkbox(t("only_geo"), value=False)
 
+    # Date range (inclusive start, exclusive end via +1 day below)
     min_dt = df["start_time_utc"].min() if not df.empty else pd.Timestamp.utcnow() - pd.Timedelta(days=7)
     max_dt = df["start_time_utc"].max() if not df.empty else pd.Timestamp.utcnow()
     min_date, max_date = min_dt.date(), max_dt.date()
@@ -262,8 +266,6 @@ with st.sidebar:
     sort_desc = st.checkbox(t("desc"), value=True)
     max_rows = st.slider(t("max_rows"), 20, 500, 100, step=20)
 
-
-
 # ===================== FILTER APPLICATION =====================
 f = df.copy()
 if not f.empty:
@@ -272,12 +274,14 @@ if not f.empty:
     if county_val:
         f = f[f["county_name"].isin(county_val)]
 
+    # Convert to UTC and apply range [date_from, date_to+1day)
     start_ts = pd.to_datetime(date_from).tz_localize("UTC")
     end_ts = (pd.to_datetime(date_to) + pd.Timedelta(days=1)).tz_localize("UTC")
     if getattr(f["start_time_utc"].dtype, "tz", None) is None:
         f["start_time_utc"] = pd.to_datetime(f["start_time_utc"], errors="coerce").dt.tz_localize("UTC")
     f = f[(f["start_time_utc"] >= start_ts) & (f["start_time_utc"] < end_ts)]
 
+    # Free text over message/location/road
     if q:
         qlc = q.lower()
         mask = (
@@ -287,9 +291,11 @@ if not f.empty:
         )
         f = f[mask]
 
+    # Road number contains
     if road:
         f = f[f["road_number"].astype("string").str.contains(road, case=False, na=False)]
 
+    # Only rows with coordinates (for map)
     if only_geo:
         f = f.dropna(subset=["latitude","longitude"])
 
@@ -298,6 +304,8 @@ c1, c2, c3 = st.columns(3)
 c1.metric(t("kpi_ongoing"), int((f["status"]=="PÅGÅR").sum()) if not f.empty else 0)
 c2.metric(t("kpi_upcoming"), int((f["status"]=="KOMMANDE").sum()) if not f.empty else 0)
 c3.metric(t("kpi_total"), 0 if f.empty else len(f))
+
+# Option to approximate missing coordinates by county centers (used on map)
 approx_missing = st.checkbox(t("approx_missing"), value=True)
 
 # ===================== CLICKABLE BAR (COUNTY) =====================
@@ -306,6 +314,7 @@ st.subheader(t("bar_hdr"))
 COLOR_MAP_PATH = "county_colors.json"
 
 def _load_color_map(path=COLOR_MAP_PATH):
+    """Load persisted county->color map."""
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as fjson:
@@ -315,6 +324,7 @@ def _load_color_map(path=COLOR_MAP_PATH):
     return {}
 
 def _save_color_map(color_map, path=COLOR_MAP_PATH):
+    """Persist county->color map."""
     try:
         with open(path, "w", encoding="utf-8") as fjson:
             json.dump(color_map, fjson, ensure_ascii=False, indent=2)
@@ -322,6 +332,7 @@ def _save_color_map(color_map, path=COLOR_MAP_PATH):
         pass
 
 def _short_label(s, n=24):
+    """Shorten labels for nicer axis rendering."""
     s = str(s)
     return (s[:n] + "…") if len(s) > n else s
 
@@ -347,6 +358,7 @@ else:
     if "county_colors" not in st.session_state:
         st.session_state.county_colors = _load_color_map()
 
+    # Stable palette across sessions as counties appear
     palette_full = (
         px.colors.qualitative.Alphabet
         + px.colors.qualitative.Plotly
@@ -363,6 +375,7 @@ else:
     if updated:
         _save_color_map(st.session_state.county_colors)
 
+    # Build horizontal bars (ascending)
     plot_df = plot_df.sort_values("count", ascending=True)
     labels_full = plot_df["county_name"].tolist()
     labels_disp = [_short_label(x) for x in labels_full]
@@ -371,11 +384,8 @@ else:
 
     fig = go.Figure(
         data=[go.Bar(
-            y=labels_disp,
-            x=values,
-            orientation="h",
-            text=values,
-            textposition="outside",
+            y=labels_disp, x=values, orientation="h",
+            text=values, textposition="outside",
             marker=dict(color=bar_colors),
             customdata=labels_full,
             hovertemplate="<b>%{customdata}</b><br>Count: %{x}<extra></extra>",
@@ -390,11 +400,11 @@ else:
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font=dict(size=14),
     )
 
+    # Click state
     if "clicked_counties" not in st.session_state:
         st.session_state.clicked_counties = set()
 
     clicked = plotly_events(fig, click_event=True, hover_event=False, select_event=False, override_height=560)
-
     if clicked:
         pt = clicked[0]
         clicked_short = pt.get("y")
@@ -407,7 +417,7 @@ else:
 
         if name:
             last = st.session_state.get("_last_clicked")
-            if last != name:
+            if last != name:  # debounce to avoid double toggles
                 if name in st.session_state.clicked_counties:
                     st.session_state.clicked_counties.remove(name)
                 else:
@@ -431,6 +441,7 @@ else:
 # ===================== MAP (pydeck + auto-zoom) =====================
 st.subheader(t("map_hdr"))
 
+# Map UI controls
 colA, colB, colC = st.columns([1.3, 1, 1])
 with colA:
     map_mode = st.radio(t("map_mode"), LANG[lang]["map_modes"], horizontal=True)
@@ -442,6 +453,7 @@ with colC:
               help=t("map_color_toggle"))
 use_county_colors = st.session_state.get("use_county_colors", False)
 
+# Fallback lat/lon by county (used when rows miss geometry)
 COUNTY_CENTER = {
     "Stockholms län": (59.334, 18.063),
     "Uppsala län": (59.858, 17.638),
@@ -464,6 +476,7 @@ map_df = m.dropna(subset=["latitude", "longitude"]).copy()
 if map_df.empty:
     st.info(t("map_no_geo"))
 else:
+    # Clean fields for tooltip
     map_df["county_name"] = map_df["county_name"].astype("string").str.strip().fillna("Okänt län")
     map_df["road_number"] = map_df["road_number"].astype("string").fillna("")
     map_df["location_descriptor"] = map_df["location_descriptor"].astype("string").fillna("")
@@ -471,10 +484,11 @@ else:
     map_df["start_str"] = pd.to_datetime(map_df["start_time_utc"], errors="coerce").astype("string").fillna("")
     map_df["mod_str"] = pd.to_datetime(map_df["modified_time_utc"], errors="coerce").astype("string").fillna("")
 
+    # Color per county (or single red)
     def _hex_to_rgba(h, a=210):
         h = str(h).lstrip("#")
         if len(h) != 6:
-            return [230, 57, 70, a]
+            return [230, 57, 70, a]  # fallback red
         return [int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), a]
 
     if use_county_colors and "county_colors" in st.session_state:
@@ -484,6 +498,7 @@ else:
     else:
         map_df["__color_rgba__"] = [[230, 57, 70, 210]] * len(map_df)
 
+    # Auto-zoom to clicked counties (if any)
     selected = set(st.session_state.get("clicked_counties", []))
     focus_df = map_df[map_df["county_name"].isin(selected)] if selected else map_df
     if focus_df.empty:
@@ -496,17 +511,19 @@ else:
     span = max(lat_max - lat_min, lon_max - lon_min)
     zoom = 11 if span <= 0.08 else 9 if span <= 0.25 else 7 if span <= 0.6 else 6 if span <= 1.2 else 5 if span <= 3.0 else 4
 
+    # Layer knobs
     c1x, c2x = st.columns(2)
     with c1x:
         point_radius = st.slider(t("map_point_size"), 2, 20, 8)
     with c2x:
         heat_intensity = st.slider(t("map_heat_intensity"), 1, 20, 8)
 
+    # Use list-of-dicts to avoid pydeck serialization issues
     data_records = map_df.to_dict(orient="records")
 
     layers = []
     modes = LANG[lang]["map_modes"]
-    if map_mode in (modes[0], modes[2]):
+    if map_mode in (modes[0], modes[2]):  # dots or both
         layers.append(pdk.Layer(
             "ScatterplotLayer",
             data=data_records,
@@ -519,7 +536,7 @@ else:
             pickable=True,
             auto_highlight=True,
         ))
-    if map_mode in (modes[1], modes[2]):
+    if map_mode in (modes[1], modes[2]):  # heatmap or both
         layers.append(pdk.Layer(
             "HeatmapLayer",
             data=data_records,
@@ -530,8 +547,10 @@ else:
             threshold=0.01,
         ))
 
-    tooltip = {"html": LANG[lang]["map_tooltip"],
-               "style": {"backgroundColor": "rgba(30,30,30,0.85)", "color": "white", "fontSize": "12px"}}
+    tooltip = {
+        "html": LANG[lang]["map_tooltip"],
+        "style": {"backgroundColor": "rgba(30,30,30,0.85)", "color": "white", "fontSize": "12px"},
+    }
     style_map = {"light": "light", "dark": "dark", "road": "road", "satellite": "satellite"}
 
     st.pydeck_chart(
@@ -541,15 +560,19 @@ else:
             map_style=style_map.get(map_style, "light"),
             tooltip=tooltip,
         ),
-        use_container_width=True,
+        width="stretch",
     )
 
 # ===================== TABLE =====================
 st.subheader(t("table_hdr", n=max_rows))
 f_sorted = f.sort_values(by=sort_col, ascending=not sort_desc).head(max_rows) if not f.empty else f
 st.dataframe(
-    f_sorted[["incident_id","message_type","status","county_name","road_number","location_descriptor","start_time_utc","end_time_utc","modified_time_utc","latitude","longitude"]] if not f_sorted.empty else f_sorted,
-    use_container_width=True,
+    f_sorted[[
+        "incident_id","message_type","status","county_name","road_number",
+        "location_descriptor","start_time_utc","end_time_utc","modified_time_utc",
+        "latitude","longitude"
+    ]] if not f_sorted.empty else f_sorted,
+    width="stretch",
 )
 
 # ===================== TREND OVER TIME =====================
@@ -565,9 +588,9 @@ if not f.empty:
         trend, x="date", y="count", markers=True,
         labels={"date": "Datum" if lang=="sv" else "Date",
                 "count": "Antal händelser" if lang=="sv" else "Incidents"},
-        title=t("trend_title")
+        title=t("trend_title"),
     )
-    st.plotly_chart(fig_trend, use_container_width=True)
+    st.plotly_chart(fig_trend, width="stretch")
 else:
     st.info(t("trend_none"))
 
@@ -577,10 +600,11 @@ if not f.empty and "message_type" in f.columns:
     type_counts = f["message_type"].value_counts().reset_index()
     type_counts.columns = [t("types_type"), t("types_count")]
     fig_types = px.bar(
-        type_counts, x=t("types_count"), y=t("types_type"),
+        type_counts,
+        x=t("types_count"), y=t("types_type"),
         orientation="h", text=t("types_count"), title=t("types_hdr"),
     )
     fig_types.update_traces(textposition="outside")
-    st.plotly_chart(fig_types, use_container_width=True)
+    st.plotly_chart(fig_types, width="stretch")
 else:
     st.info(t("types_none"))
