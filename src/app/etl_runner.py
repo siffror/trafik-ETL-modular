@@ -96,9 +96,9 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
     """Fetch from TRV (XML), parse, upsert into SQLite, return summary."""
     t0 = time.time()
 
-    # Validate required configuration (fail fast)
-    if not API_KEY:
-        raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
+    # Fail fast if the API key is missing
+    if not API_KEY: raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
+            raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
 
     url = BASE_URL or "https://api.trafikinfo.trafikverket.se/v2/data.xml"
     print(f"[ETL] Using TRV URL: {url}", flush=True)
@@ -108,6 +108,8 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
     # Build payload and call API
     payload_xml = _build_query_xml(days_back=days_back).replace("{API_KEY}", API_KEY)
     xml_text = client.post(payload_xml)  # TRVClient.post returns XML text
+    ...
+
 
     # Parse XML → rows
     rows = _parse_xml(xml_text)
