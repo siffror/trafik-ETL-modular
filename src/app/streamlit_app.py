@@ -7,6 +7,11 @@ from streamlit_plotly_events import plotly_events
 from itertools import cycle
 import plotly.graph_objects as go
 import pydeck as pdk
+# --- import fallback to ensure repo root is on sys.path ---
+import sys, pathlib
+ROOT = pathlib.Path(__file__).resolve().parents[2]  # repo root
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.app.etl_runner import run_etl
 
