@@ -2,8 +2,8 @@ name: Update trafik.db
 
 on:
   schedule:
-    - cron: "0 0 * * *"
-  workflow_dispatch: {}
+    - cron: "0 0 * * *"    # dagligen 00:00 UTC
+  workflow_dispatch: {}     # kör manuellt från Actions
 
 permissions:
   contents: write
@@ -31,15 +31,51 @@ jobs:
           python -m pip install -U pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+      # 1) Tidig kontroll: inga NBSP (0xC2A0) eller TABBAR i koden
+      - name: Audit whitespace (fail on NBSP/tabs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Scanning src/ for NBSP (\\xC2\\xA0) and TABs..."
+          bad=$(grep -rIlP '\xC2\xA0|\t' src || true)
+          if [ -n "${bad}" ]; then
+            echo "ERROR: Found NBSP/TABs in:"
+            echo "${bad}"
+            echo "Fix locally (Convert Indentation to Spaces) eller kör sanitation-steget nedan."
+            exit 1
+          fi
+          echo "OK: no NBSP/TABs detected."
+
+      # 2) Minimal sanering för just etl_runner.py (ersätter NBSP/TAB med mellanslag)
+      - name: Sanitize etl_runner.py (replace NBSP/tabs)
+        shell: bash
+        run: |
+          python - <<'PY'
+from pathlib import Path
+p = Path("src/app/etl_runner.py")
+if p.exists():
+    b = p.read_bytes()
+    cleaned = b.replace(b'\xc2\xa0', b' ').replace(b'\t', b'    ')
+    if cleaned != b:
+        p.write_bytes(cleaned)
+        print("Sanitized src/app/etl_runner.py (NBSP/TABs replaced).")
+    else:
+        print("No sanitation needed for etl_runner.py.")
+else:
+    print("etl_runner.py not found; skipping.")
+PY
+
+      # 3) Kompilera alla py-filer (hittar syntax-/indenteringsfel)
       - name: Lint: compile Python (syntax/indent)
         run: python -tt -m compileall -q src
 
+      # 4) Kör ETL och bygg trafik.db
       - name: Run ETL to build trafik.db
+        shell: bash
         env:
           PYTHONPATH: .
           TRAFIKVERKET_API_KEY: ${{ secrets.TRAFIKVERKET_API_KEY }}
           TRAFIKVERKET_URL: https://api.trafikinfo.trafikverket.se/v2/data.xml
-        shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -48,9 +84,11 @@ print(run_etl("trafik.db", days_back=1))
 PY
           test -f trafik.db || { echo "trafik.db missing"; exit 1; }
 
+      # 5) Committa och pusha om filen ändrats
       - name: Commit & push if changed
         shell: bash
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -f trafik.db
