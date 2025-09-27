@@ -196,7 +196,6 @@ df = load_data()
 st.title(t("app_title"))
 
 # ===================== SIDEBAR (ETL + FILTERS) =====================
-# ===================== SIDEBAR (ETL + FILTERS) =====================
 with st.sidebar:
     # --- ETL trigger with Slack diagnostics ---
     st.header(t("etl_hdr"))
@@ -341,7 +340,8 @@ with st.sidebar:
     else:
         date_from, date_to = min_date, max_date
 
-    sort_col = st.selectbox(t("sort_by"), LANG[lang]["sort_options"], k_]()
+    sort_col = st.selectbox(t("sort_by"), LANG[lang]["sort_options"], key="flt_sortby")
+
 
     # --- Filters (give explicit keys to avoid duplicate element ids) ---
     st.header(t("filters_hdr"))
