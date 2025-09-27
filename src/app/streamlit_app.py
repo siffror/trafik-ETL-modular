@@ -8,10 +8,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from streamlit_plotly_events import plotly_events
 import pydeck as pdk
-# ensure we always use the latest notifier implementation
-import importlib
-from src.utils import notifier as notifier
-importlib.reload(notifier)  # force reload on rerun
 
 # --- ensure repo root on sys.path so `src.*` imports work both locally and on Cloud
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -19,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.app.etl_runner import run_etl  # after sys.path fix
+
 
 # ===================== APP CONFIG =====================
 st.set_page_config(page_title="TRV Incidents Dashboard", layout="wide")
