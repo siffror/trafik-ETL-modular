@@ -2,7 +2,7 @@ name: Update trafik.db
 
 on:
   schedule:
-    - cron: "*/15 * * * *"     # kör var 15:e minut
+    - cron: "0 0 * * *"     # Run one time / 24 h
   workflow_dispatch: {}         # så du kan köra manuellt
 
 permissions:
