@@ -7,6 +7,7 @@ from streamlit_plotly_events import plotly_events
 from itertools import cycle
 import plotly.graph_objects as go
 import pydeck as pdk
+
 # --- import fallback to ensure repo root is on sys.path ---
 import sys, pathlib
 ROOT = pathlib.Path(__file__).resolve().parents[2]  # repo root
@@ -16,21 +17,10 @@ if str(ROOT) not in sys.path:
 from src.app.etl_runner import run_etl
 
 # ===================== APP CONFIG =====================
-# Title comes from i18n below, but layout must be set now
 st.set_page_config(page_title="TRV Incidents Dashboard", layout="wide")
-
 DB_PATH = os.getenv("TRAFIK_DB_PATH", "trafik.db")
 
-# ===================== i18n (sv/en) =====================
-def _get_lang():
-    qp = st.query_params
-    lang = qp.get("lang", ["sv"])[0]
-    return lang if lang in ("sv", "en") else "sv"
-
-def _set_lang(lang):
-    st.query_params["lang"] = lang
-    st.session_state["_lang"] = lang
-
+# ===================== i18n (sv/en) — SAFE (no session writes) =====================
 LANG = {
     "sv": {
         "app_title": "TRV Väghändelser – pågår & kommande",
@@ -39,7 +29,6 @@ LANG = {
         "etl_running": "Kör ETL mot TRV API...",
         "etl_ok": "✅ ETL klar – {rows} rader (PÅGÅR={pagar}, KOMMANDE={kommande}) på {seconds}s",
         "etl_err": "🚨 ETL FEL: {err}",
-
         "filters_hdr": "Filter",
         "status": "Status",
         "county": "Län",
@@ -50,13 +39,10 @@ LANG = {
         "sort_by": "Sortera tabell efter",
         "desc": "Fallande (senaste först)",
         "max_rows": "Max rader i tabell",
-
         "kpi_ongoing": "PÅGÅR",
         "kpi_upcoming": "KOMMANDE",
         "kpi_total": "Totalt i urval",
-
         "approx_missing": "Visa saknade koordinater i länscentrum",
-
         "bar_hdr": "Händelser per län – klicka för att filtrera",
         "bar_none": "Inga händelser i urvalet för att rita staplar.",
         "bar_all": "Visa alla län",
@@ -64,7 +50,6 @@ LANG = {
         "bar_title_top": "Topp 10 län med flest händelser",
         "bar_click_filter": "Filter via klick: ",
         "bar_clear": "Rensa klick-filter",
-
         "map_hdr": "Karta över aktiva händelser",
         "map_mode": "Kartläge",
         "map_modes": ["Prickar", "Heatmap", "Båda"],
@@ -80,7 +65,6 @@ LANG = {
             "Start: {start_str}<br/>"
             "Ändrad: {mod_str}"
         ),
-
         "table_hdr": "Senaste händelser (max {n} rader)",
         "trend_hdr": "Antal händelser per dag",
         "trend_title": "Utveckling av händelser över tid",
@@ -89,7 +73,6 @@ LANG = {
         "types_none": "Ingen data att visa för händelsetyper.",
         "types_count": "Antal",
         "types_type": "Typ",
-
         "status_options": ["PÅGÅR", "KOMMANDE"],
         "sort_options": ["modified_time_utc","start_time_utc","county_name","message_type","road_number"],
         "map_styles": ["light", "dark", "road", "satellite"],
@@ -102,7 +85,6 @@ LANG = {
         "etl_running": "Running ETL against TRV API...",
         "etl_ok": "✅ ETL finished – {rows} rows (Ongoing={pagar}, Upcoming={kommande}) in {seconds}s",
         "etl_err": "🚨 ETL failed: {err}",
-
         "filters_hdr": "Filters",
         "status": "Status",
         "county": "County",
@@ -113,13 +95,10 @@ LANG = {
         "sort_by": "Sort table by",
         "desc": "Descending (latest first)",
         "max_rows": "Max rows in table",
-
         "kpi_ongoing": "Ongoing",
         "kpi_upcoming": "Upcoming",
         "kpi_total": "Total (filtered)",
-
         "approx_missing": "Show missing coordinates in county centers",
-
         "bar_hdr": "Incidents per county – click to filter",
         "bar_none": "No incidents to plot for current selection.",
         "bar_all": "Show all counties",
@@ -127,7 +106,6 @@ LANG = {
         "bar_title_top": "Top 10 counties by incidents",
         "bar_click_filter": "Click filter: ",
         "bar_clear": "Clear click filter",
-
         "map_hdr": "Map of active incidents",
         "map_mode": "Map mode",
         "map_modes": ["Dots", "Heatmap", "Both"],
@@ -143,7 +121,6 @@ LANG = {
             "Start: {start_str}<br/>"
             "Updated: {mod_str}"
         ),
-
         "table_hdr": "Latest incidents (max {n} rows)",
         "trend_hdr": "Incidents per day",
         "trend_title": "Incidents over time",
@@ -152,28 +129,30 @@ LANG = {
         "types_none": "No data for incident types.",
         "types_count": "Count",
         "types_type": "Type",
-
-        "status_options": ["PÅGÅR", "KOMMANDE"],  # keep data values as-is
+        "status_options": ["PÅGÅR", "KOMMANDE"],  # data values unchanged
         "sort_options": ["modified_time_utc","start_time_utc","county_name","message_type","road_number"],
         "map_styles": ["light", "dark", "road", "satellite"],
         "lang_label": "Language / Språk",
     },
 }
 
-if "_lang" not in st.session_state:
-    st.session_state["_lang"] = _get_lang()
-LANG_CODE = st.sidebar.selectbox(
-    LANG[st.session_state["_lang"]]["lang_label"],
-    ["sv", "en"],
-    index=["sv", "en"].index(st.session_state["_lang"]),
-    key="_lang",
-)
-if LANG_CODE != st.query_params.get("lang", ["sv"])[0]:
-    _set_lang(LANG_CODE)
+def _lang_from_query():
+    try:
+        qp = st.query_params
+        val = qp.get("lang", "sv")
+        return val if val in ("sv", "en") else "sv"
+    except Exception:
+        return "sv"
+
+LANG_OPTIONS = ["sv", "en"]
+lang_qp = _lang_from_query()
+default_idx = LANG_OPTIONS.index(lang_qp) if lang_qp in LANG_OPTIONS else 0
+lang = st.sidebar.selectbox(LANG[lang_qp]["lang_label"], LANG_OPTIONS, index=default_idx, key="lang_select")
+if lang != lang_qp:
+    st.query_params["lang"] = lang  # keep URL in sync
 
 def t(key, **kwargs):
-    """Translate helper with format support."""
-    s = LANG[st.session_state["_lang"]].get(key, key)
+    s = LANG[lang].get(key, key)
     return s.format(**kwargs) if kwargs else s
 
 # ===================== DATA LOADING =====================
@@ -200,7 +179,6 @@ def load_data():
     for col in ["latitude", "longitude"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-
     for col in ["incident_id","message","message_type","location_descriptor","road_number","county_name","status"]:
         if col in df.columns:
             df[col] = df[col].astype("string").str.strip()
@@ -213,28 +191,24 @@ st.title(t("app_title"))
 
 # ===================== SIDEBAR (ETL + FILTERS) =====================
 with st.sidebar:
-    # ETL trigger
     st.header(t("etl_hdr"))
     if st.button(t("etl_btn")):
         with st.spinner(t("etl_running")):
             try:
                 summary = run_etl(DB_PATH, days_back=1)
                 st.success(t("etl_ok", rows=summary["rows"], pagar=summary["pagar"], kommande=summary["kommande"], seconds=summary["seconds"]))
-                # Reload fresh data after ETL run
-                df = load_data()
+                df = load_data()  # refresh after ETL
             except Exception as e:
                 st.error(t("etl_err", err=e))
 
-    # Filters
     st.header(t("filters_hdr"))
-    status_val = st.multiselect(t("status"), t("status_options"), default=t("status_options"))
+    status_val = st.multiselect(t("status"), LANG[lang]["status_options"], default=LANG[lang]["status_options"])
     county_opts = sorted(df["county_name"].dropna().unique()) if not df.empty else []
     county_val = st.multiselect(t("county"), county_opts, default=list(county_opts))
     q = st.text_input(t("search"), "")
     road = st.text_input(t("road"), "").strip()
     only_geo = st.checkbox(t("only_geo"), value=False)
 
-    # Date range
     min_dt = df["start_time_utc"].min() if not df.empty else pd.Timestamp.utcnow() - pd.Timedelta(days=7)
     max_dt = df["start_time_utc"].max() if not df.empty else pd.Timestamp.utcnow()
     min_date, max_date = min_dt.date(), max_dt.date()
@@ -244,8 +218,7 @@ with st.sidebar:
     else:
         date_from, date_to = min_date, max_date
 
-    # Sorting & table options
-    sort_col = st.selectbox(t("sort_by"), t("sort_options"))
+    sort_col = st.selectbox(t("sort_by"), LANG[lang]["sort_options"])
     sort_desc = st.checkbox(t("desc"), value=True)
     max_rows = st.slider(t("max_rows"), 20, 500, 100, step=20)
 
@@ -257,14 +230,12 @@ if not f.empty:
     if county_val:
         f = f[f["county_name"].isin(county_val)]
 
-    # Inclusive start; exclusive end (+1 day) for date range
     start_ts = pd.to_datetime(date_from).tz_localize("UTC")
     end_ts = (pd.to_datetime(date_to) + pd.Timedelta(days=1)).tz_localize("UTC")
     if getattr(f["start_time_utc"].dtype, "tz", None) is None:
         f["start_time_utc"] = pd.to_datetime(f["start_time_utc"], errors="coerce").dt.tz_localize("UTC")
     f = f[(f["start_time_utc"] >= start_ts) & (f["start_time_utc"] < end_ts)]
 
-    # Free text across message/location/road
     if q:
         qlc = q.lower()
         mask = (
@@ -274,11 +245,9 @@ if not f.empty:
         )
         f = f[mask]
 
-    # Road number contains
     if road:
         f = f[f["road_number"].astype("string").str.contains(road, case=False, na=False)]
 
-    # Only rows with coordinates (for map)
     if only_geo:
         f = f.dropna(subset=["latitude","longitude"])
 
@@ -287,8 +256,6 @@ c1, c2, c3 = st.columns(3)
 c1.metric(t("kpi_ongoing"), int((f["status"]=="PÅGÅR").sum()) if not f.empty else 0)
 c2.metric(t("kpi_upcoming"), int((f["status"]=="KOMMANDE").sum()) if not f.empty else 0)
 c3.metric(t("kpi_total"), 0 if f.empty else len(f))
-
-# Expose checkbox for map fallback coords
 approx_missing = st.checkbox(t("approx_missing"), value=True)
 
 # ===================== CLICKABLE BAR (COUNTY) =====================
@@ -297,7 +264,6 @@ st.subheader(t("bar_hdr"))
 COLOR_MAP_PATH = "county_colors.json"
 
 def _load_color_map(path=COLOR_MAP_PATH):
-    """Load color map from JSON file."""
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as fjson:
@@ -307,7 +273,6 @@ def _load_color_map(path=COLOR_MAP_PATH):
     return {}
 
 def _save_color_map(color_map, path=COLOR_MAP_PATH):
-    """Persist color map to JSON file."""
     try:
         with open(path, "w", encoding="utf-8") as fjson:
             json.dump(color_map, fjson, ensure_ascii=False, indent=2)
@@ -315,7 +280,6 @@ def _save_color_map(color_map, path=COLOR_MAP_PATH):
         pass
 
 def _short_label(s, n=24):
-    """Shorten long labels for plotting."""
     s = str(s)
     return (s[:n] + "…") if len(s) > n else s
 
@@ -401,7 +365,7 @@ else:
 
         if name:
             last = st.session_state.get("_last_clicked")
-            if last != name:  # debounce
+            if last != name:
                 if name in st.session_state.clicked_counties:
                     st.session_state.clicked_counties.remove(name)
                 else:
@@ -425,19 +389,17 @@ else:
 # ===================== MAP (pydeck + auto-zoom) =====================
 st.subheader(t("map_hdr"))
 
-# UI controls
 colA, colB, colC = st.columns([1.3, 1, 1])
 with colA:
-    map_mode = st.radio(t("map_mode"), t("map_modes"), horizontal=True)
+    map_mode = st.radio(t("map_mode"), LANG[lang]["map_modes"], horizontal=True)
 with colB:
-    map_style = st.selectbox(t("map_style"), LANG[st.session_state["_lang"]]["map_styles"], index=0)
+    map_style = st.selectbox(t("map_style"), LANG[lang]["map_styles"], index=0)
 with colC:
     st.toggle(t("map_color_toggle"), key="use_county_colors",
               value=st.session_state.get("use_county_colors", False),
               help=t("map_color_toggle"))
 use_county_colors = st.session_state.get("use_county_colors", False)
 
-# Default county centers for missing coords (fallback)
 COUNTY_CENTER = {
     "Stockholms län": (59.334, 18.063),
     "Uppsala län": (59.858, 17.638),
@@ -460,7 +422,6 @@ map_df = m.dropna(subset=["latitude", "longitude"]).copy()
 if map_df.empty:
     st.info(t("map_no_geo"))
 else:
-    # Clean tooltip columns
     map_df["county_name"] = map_df["county_name"].astype("string").str.strip().fillna("Okänt län")
     map_df["road_number"] = map_df["road_number"].astype("string").fillna("")
     map_df["location_descriptor"] = map_df["location_descriptor"].astype("string").fillna("")
@@ -468,11 +429,10 @@ else:
     map_df["start_str"] = pd.to_datetime(map_df["start_time_utc"], errors="coerce").astype("string").fillna("")
     map_df["mod_str"] = pd.to_datetime(map_df["modified_time_utc"], errors="coerce").astype("string").fillna("")
 
-    # Color per county (or single red)
     def _hex_to_rgba(h, a=210):
         h = str(h).lstrip("#")
         if len(h) != 6:
-            return [230, 57, 70, a]  # fallback red
+            return [230, 57, 70, a]
         return [int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), a]
 
     if use_county_colors and "county_colors" in st.session_state:
@@ -482,7 +442,6 @@ else:
     else:
         map_df["__color_rgba__"] = [[230, 57, 70, 210]] * len(map_df)
 
-    # Auto-zoom based on clicked counties (if any)
     selected = set(st.session_state.get("clicked_counties", []))
     focus_df = map_df[map_df["county_name"].isin(selected)] if selected else map_df
     if focus_df.empty:
@@ -495,18 +454,17 @@ else:
     span = max(lat_max - lat_min, lon_max - lon_min)
     zoom = 11 if span <= 0.08 else 9 if span <= 0.25 else 7 if span <= 0.6 else 6 if span <= 1.2 else 5 if span <= 3.0 else 4
 
-    # Layer controls
     c1x, c2x = st.columns(2)
     with c1x:
         point_radius = st.slider(t("map_point_size"), 2, 20, 8)
     with c2x:
         heat_intensity = st.slider(t("map_heat_intensity"), 1, 20, 8)
 
-    # Use records (list of dicts) to avoid pydeck serialization issues
     data_records = map_df.to_dict(orient="records")
 
     layers = []
-    if map_mode in (t("map_modes")[0], t("map_modes")[2]):  # Dots or Both
+    modes = LANG[lang]["map_modes"]
+    if map_mode in (modes[0], modes[2]):
         layers.append(pdk.Layer(
             "ScatterplotLayer",
             data=data_records,
@@ -519,7 +477,7 @@ else:
             pickable=True,
             auto_highlight=True,
         ))
-    if map_mode in (t("map_modes")[1], t("map_modes")[2]):  # Heatmap or Both
+    if map_mode in (modes[1], modes[2]):
         layers.append(pdk.Layer(
             "HeatmapLayer",
             data=data_records,
@@ -530,7 +488,7 @@ else:
             threshold=0.01,
         ))
 
-    tooltip = {"html": t("map_tooltip"),
+    tooltip = {"html": LANG[lang]["map_tooltip"],
                "style": {"backgroundColor": "rgba(30,30,30,0.85)", "color": "white", "fontSize": "12px"}}
     style_map = {"light": "light", "dark": "dark", "road": "road", "satellite": "satellite"}
 
@@ -563,8 +521,8 @@ if not f.empty:
     )
     fig_trend = px.line(
         trend, x="date", y="count", markers=True,
-        labels={"date": "Datum" if st.session_state["_lang"]=="sv" else "Date",
-                "count": "Antal händelser" if st.session_state["_lang"]=="sv" else "Incidents"},
+        labels={"date": "Datum" if lang=="sv" else "Date",
+                "count": "Antal händelser" if lang=="sv" else "Incidents"},
         title=t("trend_title")
     )
     st.plotly_chart(fig_trend, use_container_width=True)
