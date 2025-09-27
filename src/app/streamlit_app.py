@@ -305,141 +305,6 @@ with st.sidebar:
     sort_desc = st.checkbox(t("desc"), value=True, key="flt_desc")
     max_rows = st.slider(t("max_rows"), 20, 500, 100, step=20, key="flt_maxrows")
 
-
-    # --- Filters ---
-    st.header(t("filters_hdr"))
-    status_val = st.multiselect(
-        t("status"),
-        LANG[lang]["status_options"],
-        default=LANG[lang]["status_options"],
-        key="flt_status"
-    )
-    county_opts = sorted(df["county_name"].dropna().unique()) if not df.empty else []
-    county_val = st.multiselect(
-        t("county"),
-        county_opts,
-        default=list(county_opts),
-        key="flt_county"
-    )
-    q = st.text_input(t("search"), value="", key="flt_search")
-    road = st.text_input(t("road"), value="", key="flt_road").strip()
-    only_geo = st.checkbox(t("only_geo"), value=False, key="flt_only_geo")
-
-    min_dt = df["start_time_utc"].min() if not df.empty else pd.Timestamp.utcnow() - pd.Timedelta(days=7)
-    max_dt = df["start_time_utc"].max() if not df.empty else pd.Timestamp.utcnow()
-    min_date, max_date = min_dt.date(), max_dt.date()
-    date_range = st.date_input(
-        t("date_range"),
-        value=(min_date, max_date),
-        min_value=min_date,
-        max_value=max_date,
-        key="flt_daterange"
-    )
-    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-        date_from, date_to = date_range
-    else:
-        date_from, date_to = min_date, max_date
-
-    sort_col = st.selectbox(t("sort_by"), LANG[lang]["sort_options"], key="flt_sortby")
-
-
-    # --- Filters (give explicit keys to avoid duplicate element ids) ---
-    st.header(t("filters_hdr"))
-
-    status_val = st.multiselect(
-        t("status"),
-        LANG[lang]["status_options"],
-        default=LANG[lang]["status_options"],
-        key="flt_status"
-    )
-
-    county_opts = sorted(df["county_name"].dropna().unique()) if not df.empty else []
-    county_val = st.multiselect(
-        t("county"),
-        county_opts,
-        default=list(county_opts),
-        key="flt_county"
-    )
-
-    q = st.text_input(
-        t("search"),
-        value="",
-        key="flt_search"
-    )
-
-    road = st.text_input(
-        t("road"),
-        value="",
-        key="flt_road"
-    ).strip()
-
-    only_geo = st.checkbox(
-        t("only_geo"),
-        value=False,
-        key="flt_only_geo"
-    )
-
-    # Date range (inclusive start, exclusive end via +1 day in filter step)
-    min_dt = df["start_time_utc"].min() if not df.empty else pd.Timestamp.utcnow() - pd.Timedelta(days=7)
-    max_dt = df["start_time_utc"].max() if not df.empty else pd.Timestamp.utcnow()
-    min_date, max_date = min_dt.date(), max_dt.date()
-
-    date_range = st.date_input(
-        t("date_range"),
-        value=(min_date, max_date),
-        min_value=min_date,
-        max_value=max_date,
-        key="flt_daterange"
-    )
-    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-        date_from, date_to = date_range
-    else:
-        date_from, date_to = min_date, max_date
-
-    sort_col = st.selectbox(
-        t("sort_by"),
-        LANG[lang]["sort_options"],
-        key="flt_sortby"
-    )
-
-    sort_desc = st.checkbox(
-        t("desc"),
-        value=True,
-        key="flt_desc"
-    )
-
-    max_rows = st.slider(
-        t("max_rows"),
-        min_value=20, max_value=500, value=100, step=20,
-        key="flt_maxrows"
-    )
-
-
-
-
-    # --- Filters ---
-    st.header(t("filters_hdr"))
-    status_val = st.multiselect(t("status"), LANG[lang]["status_options"], default=LANG[lang]["status_options"])
-    county_opts = sorted(df["county_name"].dropna().unique()) if not df.empty else []
-    county_val = st.multiselect(t("county"), county_opts, default=list(county_opts))
-    q = st.text_input(t("search"), "")
-    road = st.text_input(t("road"), "").strip()
-    only_geo = st.checkbox(t("only_geo"), value=False)
-
-    # Date range (inclusive start, exclusive end via +1 day below)
-    min_dt = df["start_time_utc"].min() if not df.empty else pd.Timestamp.utcnow() - pd.Timedelta(days=7)
-    max_dt = df["start_time_utc"].max() if not df.empty else pd.Timestamp.utcnow()
-    min_date, max_date = min_dt.date(), max_dt.date()
-    date_range = st.date_input(t("date_range"), value=(min_date, max_date), min_value=min_date, max_value=max_date)
-    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-        date_from, date_to = date_range
-    else:
-        date_from, date_to = min_date, max_date
-
-    sort_col = st.selectbox(t("sort_by"), LANG[lang]["sort_options"])
-    sort_desc = st.checkbox(t("desc"), value=True)
-    max_rows = st.slider(t("max_rows"), 20, 500, 100, step=20)
-
 # ===================== FILTER APPLICATION =====================
 f = df.copy()
 if not f.empty:
@@ -633,13 +498,12 @@ with colB:
         key="map_style"
     )
 with colC:
-    st.toggle(
+    use_county_colors = st.toggle(
         t("map_color_toggle"),
         key="use_county_colors",
         value=st.session_state.get("use_county_colors", False),
         help=t("map_color_toggle")
     )
-use_county_colors = st.session_state.get("use_county_colors", False)
 
 # Option to approximate missing coordinates by county centers (used on map)
 approx_missing = st.checkbox(t("approx_missing"), value=True, key="approx_missing")
