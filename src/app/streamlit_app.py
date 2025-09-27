@@ -196,13 +196,14 @@ df = load_data()
 st.title(t("app_title"))
 
 # ===================== SIDEBAR (ETL + FILTERS) =====================
+# ===================== SIDEBAR (ETL + FILTERS) =====================
 with st.sidebar:
     # --- ETL trigger with Slack diagnostics ---
     st.header(t("etl_hdr"))
     if st.button(t("etl_btn"), key="btn_etl_now"):
         with st.spinner(t("etl_running")):
             try:
-                # Import here to avoid circulars on cold start
+                # Import here to avoid circular imports on cold start
                 from src.utils.notifier import notify
 
                 # Notify start (no ping here to avoid spam)
@@ -296,6 +297,7 @@ with st.sidebar:
     else:
         date_from, date_to = min_date, max_date
 
+    # Sorting and row cap
     sort_col = st.selectbox(
         t("sort_by"),
         LANG[lang]["sort_options"],
@@ -303,6 +305,7 @@ with st.sidebar:
     )
     sort_desc = st.checkbox(t("desc"), value=True, key="flt_desc")
     max_rows = st.slider(t("max_rows"), 20, 500, 100, step=20, key="flt_maxrows")
+
 
     # --- Filters ---
     st.header(t("filters_hdr"))
