@@ -1,5 +1,6 @@
 # src/app/etl_runner.py
 import os
+import time  
 import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta, timezone
@@ -31,6 +32,7 @@ def _build_query_xml(days_back: int = 1) -> str:
     <INCLUDE>ModifiedTime</INCLUDE>
     <INCLUDE>CountyNo</INCLUDE>
     <INCLUDE>CountyName</INCLUDE>
+    <INCLUDE>Message</INCLUDE>
     <INCLUDE>MessageType</INCLUDE>
     <INCLUDE>RoadNumber</INCLUDE>
     <INCLUDE>LocationDescriptor</INCLUDE>
@@ -94,6 +96,9 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
     """Fetch from TRV (XML), parse, upsert into SQLite, return summary."""
     t0 = time.time()
+    
+    if not API_KEY:
+    raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
 
     # Use the correct host and your real API key
     print(f"[ETL] Using TRV URL: {BASE_URL}", flush=True)  # helpful in Actions logs
