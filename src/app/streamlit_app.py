@@ -527,19 +527,34 @@ else:
 # ===================== MAP (pydeck + auto-zoom) =====================
 st.subheader(t("map_hdr"))
 
-# Map UI controls
+# Map UI controls: define columns BEFORE using them
+colA, colB, colC = st.columns([1.3, 1, 1], gap="small")
 with colA:
-    map_mode = st.radio(t("map_mode"), LANG[lang]["map_modes"], horizontal=True, key="map_mode")
+    # Stable key so language switches don't duplicate the widget
+    map_mode = st.radio(
+        t("map_mode"),
+        LANG[lang]["map_modes"],
+        horizontal=True,
+        key="map_mode"
+    )
 with colB:
-    map_style = st.selectbox(t("map_style"), LANG[lang]["map_styles"], index=0, key="map_style")
+    map_style = st.selectbox(
+        t("map_style"),
+        LANG[lang]["map_styles"],
+        index=0,
+        key="map_style"
+    )
 with colC:
-    st.toggle(t("map_color_toggle"), key="use_county_colors",
-              value=st.session_state.get("use_county_colors", False),
-              help=t("map_color_toggle"))
-# Sliders:
-point_radius   = st.slider(t("map_point_size"), 2, 20, 8, key="map_point_size")
-heat_intensity = st.slider(t("map_heat_intensity"), 1, 20, 8, key="map_heat_intensity")
+    st.toggle(
+        t("map_color_toggle"),
+        key="use_county_colors",
+        value=st.session_state.get("use_county_colors", False),
+        help=t("map_color_toggle")
+    )
+use_county_colors = st.session_state.get("use_county_colors", False)
 
+# Option to approximate missing coordinates by county centers (used on map)
+approx_missing = st.checkbox(t("approx_missing"), value=True, key="approx_missing")
 
 # Fallback lat/lon by county (used when rows miss geometry)
 COUNTY_CENTER = {
@@ -559,6 +574,7 @@ if approx_missing and not m.empty:
         lambda r: r["longitude"] if pd.notna(r["longitude"])
         else COUNTY_CENTER.get(r["county_name"], (None, None))[1], axis=1
     )
+
 map_df = m.dropna(subset=["latitude", "longitude"]).copy()
 
 if map_df.empty:
@@ -599,12 +615,12 @@ else:
     span = max(lat_max - lat_min, lon_max - lon_min)
     zoom = 11 if span <= 0.08 else 9 if span <= 0.25 else 7 if span <= 0.6 else 6 if span <= 1.2 else 5 if span <= 3.0 else 4
 
-    # Layer knobs
+    # Layer knobs (give stable keys)
     c1x, c2x = st.columns(2)
     with c1x:
-        point_radius = st.slider(t("map_point_size"), 2, 20, 8)
+        point_radius = st.slider(t("map_point_size"), 2, 20, 8, key="map_point_size")
     with c2x:
-        heat_intensity = st.slider(t("map_heat_intensity"), 1, 20, 8)
+        heat_intensity = st.slider(t("map_heat_intensity"), 1, 20, 8, key="map_heat_intensity")
 
     # Use list-of-dicts to avoid pydeck serialization issues
     data_records = map_df.to_dict(orient="records")
@@ -650,21 +666,6 @@ else:
         ),
         use_container_width=True,
     )
-
-
-# ===================== TABLE =====================
-st.subheader(t("table_hdr", n=max_rows))
-f_sorted = f.sort_values(by=sort_col, ascending=not sort_desc).head(max_rows) if not f.empty else f
-
-# Use use_container_width instead of width="stretch"
-st.dataframe(
-    f_sorted[[
-        "incident_id","message_type","status","county_name","road_number",
-        "location_descriptor","start_time_utc","end_time_utc","modified_time_utc",
-        "latitude","longitude"
-    ]] if not f_sorted.empty else f_sorted,
-    use_container_width=True,
-)
 
 # ===================== TREND OVER TIME =====================
 st.subheader(t("trend_hdr"))
