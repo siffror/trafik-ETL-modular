@@ -1,24 +1,34 @@
 # src/utils/notifier.py
-import os
-import json
-import requests
-import logging
+import os, json, requests, logging
 from dotenv import load_dotenv
-import streamlit as st
 
-# Load .env locally
+# Optional import: on Streamlit Cloud we prefer st.secrets
+try:
+    import streamlit as st  # type: ignore
+except Exception:
+    st = None  # running outside Streamlit
+
+# Load .env for local runs; harmless on Cloud
 load_dotenv()
 
-# Prefer Streamlit secrets if running on Cloud
-SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL") or st.secrets.get("SLACK_WEBHOOK_URL")
+# Prefer Streamlit secrets if available
+SLACK_WEBHOOK_URL = (
+    (st.secrets.get("SLACK_WEBHOOK_URL") if st else None)
+    or os.getenv("SLACK_WEBHOOK_URL")
+)
 
 logger = logging.getLogger("notifier")
 
-def _safe_post(payload: dict) -> None:
-    """Send JSON payload to Slack webhook (silent on failure)."""
+def _safe_post(payload: dict) -> dict:
+    """
+    Send JSON payload to Slack webhook.
+    Returns a status dict for diagnostics:
+      {"sent": bool, "configured": bool, "status": int|None, "error": str|None}
+    """
     if not SLACK_WEBHOOK_URL:
-        logger.debug("No SLACK_WEBHOOK_URL defined – skipping Slack.")
-        return
+        logger.debug("No SLACK_WEBHOOK_URL configured.")
+        return {"sent": False, "configured": False, "status": None, "error": None}
+
     try:
         resp = requests.post(
             SLACK_WEBHOOK_URL,
@@ -27,22 +37,35 @@ def _safe_post(payload: dict) -> None:
             timeout=10,
         )
         if resp.status_code != 200:
-            logger.warning(f"Slack API responded {resp.status_code}: {resp.text}")
+            msg = f"Slack responded {resp.status_code}: {resp.text}"
+            logger.warning(msg)
+            return {"sent": False, "configured": True, "status": resp.status_code, "error": msg}
+        return {"sent": True, "configured": True, "status": resp.status_code, "error": None}
     except Exception as e:
-        logger.error(f"Could not send to Slack: {e}")
+        msg = f"Slack request failed: {e}"
+        logger.error(msg)
+        return {"sent": False, "configured": True, "status": None, "error": str(e)}
 
-def notify(text: str, level: str = "info") -> None:
-    """Send notification to Slack + log locally."""
+def notify(text: str, level: str = "info") -> dict:
+    """
+    Send notification to Slack + log locally.
+    Returns the status dict from _safe_post (see above).
+    """
     emojis = {"info": "ℹ️", "warning": "⚠️", "error": "🚨", "success": "✅"}
     emoji = emojis.get(level, "ℹ️")
     message = f"{emoji} {text}"
 
-    # Always log locally
-    getattr(logger, "error" if level=="error" else "warning" if level=="warning" else "info")(message)
+    # Local log
+    if level == "error":
+        logger.error(message)
+    elif level == "warning":
+        logger.warning(message)
+    else:
+        logger.info(message)
 
-    # Send to Slack if configured
-    _safe_post({"text": message})
+    # Slack
+    return _safe_post({"text": message})
 
-# Backward compatibility alias
-def send_slack(text: str, level: str = "info") -> None:
-    notify(text, level)
+# Backward-compat alias
+def send_slack(text: str, level: str = "info") -> dict:
+    return notify(text, level)
