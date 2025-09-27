@@ -37,8 +37,12 @@ jobs:
           TRAFIKVERKET_API_KEY: ${{ secrets.TRAFIKVERKET_API_KEY }}
           TRAFIKVERKET_URL: "https://api.trafikinfo.trafikverket.se/v2/data.xml"
         run: |
-          python -c "from src.app.etl_runner import run_etl; print(run_etl('trafik.db', days_back=1))"
+          python - <<'PY'
+          from src.app.etl_runner import run_etl
+          print(run_etl("trafik.db", days_back=1))
+          PY
           test -f trafik.db || (echo 'trafik.db missing' && exit 1)
+
 
       - name: Commit & push if changed
         run: |
