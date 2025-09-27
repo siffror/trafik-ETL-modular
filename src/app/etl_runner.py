@@ -14,13 +14,17 @@ API_KEY = os.getenv("TRAFIKVERKET_API_KEY", "")
 BASE_URL = os.getenv("TRAFIKVERKET_URL", "https://api.trafikinfo.trafikverket.se/v2/data.xml")
 
 
-def _require_api_key() -> str:
-    """Return API key or raise a clear error if missing."""
-    key = (os.getenv("TRAFIKVERKET_API_KEY") or API_KEY or "").strip()
-    if not key:
-        raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
-    return key
+def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
+    t0 = time.time()
+    
+    # Hämta API-nyckel ordentligt med _require_api_key()
+    api_key = _require_api_key()
 
+    print(f"[ETL] Using TRV URL: {BASE_URL}", flush=True)
+    client = TRVClient(api_key=api_key, base_url=BASE_URL, timeout=30)
+
+    payload_xml = _build_query_xml(days_back=days_back).replace("{API_KEY}", api_key)
+    xml_text = client.post(payload_xml)
 
 def _build_query_xml(days_back: int = 1) -> str:
     """Build minimal TRV XML query (adjust to your schema)."""
