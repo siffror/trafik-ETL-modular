@@ -1,5 +1,7 @@
 # src/app/etl_runner.py
+import os
 import sqlite3
+import time
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 from xml.etree import ElementTree as ET
@@ -7,17 +9,13 @@ from typing import List, Dict, Any, Tuple
 
 from src.trv.client import TRVClient
 
-def _build_query_xml(days_back: int = 1) -> str:
-    """
-    Build a minimal TRV XML query. Adjust the OBJECT and fields as per TRV API.
-    This is just an example skeleton.
-    """
-    # Time window
-    since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
+# --- config pulled from env with correct default URL ---
+API_KEY  = os.getenv("TRAFIKVERKET_API_KEY", "")
+BASE_URL = os.getenv("TRAFIKVERKET_URL", "https://api.trafikinfo.trafikverket.se/v2/data.xml")  # correct host
 
-    # NOTE: Replace OBJECT/Filter/Include with your actual TRV object & fields.
-    # Trafikverket's API typically expects <QUERY><LOGIN><APIKEY>... etc,
-    # but many setups proxy that. Keep your working envelope if you already have it.
+def _build_query_xml(days_back: int = 1) -> str:
+    """Build minimal TRV XML query (adjust to your schema)."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
     return f"""<REQUEST>
   <LOGIN authenticationkey="{{API_KEY}}"/>
   <QUERY objecttype="Situation" schemaversion="1">
@@ -39,30 +37,18 @@ def _build_query_xml(days_back: int = 1) -> str:
 </REQUEST>"""
 
 def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
-    """
-    Parse TRV XML response into a list of dicts.
-    Adjust tag names and paths to match your actual response schema.
-    """
+    """Parse TRV XML into list of dicts (adapt tags to your schema)."""
     root = ET.fromstring(xml_text)
-
     rows: List[Dict[str, Any]] = []
-
-    # Typical TRV structure: <RESPONSE><RESULT><Situation>...</Situation>...</RESULT></RESPONSE>
-    # Adapt the tag names if your object differs.
-    # We'll search for all elements that look like incident nodes.
-    # For safety, do a broad search and map fields defensively.
     for node in root.findall(".//Situation"):
         def text(path: str) -> str:
             el = node.find(path)
             return el.text.strip() if (el is not None and el.text) else ""
-
-        # Geometry often appears as WKT-like "POINT (lon lat)" or similar.
         wgs84 = text("Geometry/WGS84")
         lat, lon = _extract_lat_lon(wgs84)
-
         rows.append({
             "incident_id": text("Id"),
-            "message": text("Message"),  # if present
+            "message": text("Message"),
             "message_type": text("MessageType"),
             "location_descriptor": text("LocationDescriptor"),
             "road_number": text("RoadNumber"),
@@ -75,32 +61,23 @@ def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
             "longitude": lon,
             "status": text("Status"),
         })
-
     return rows
 
 def _extract_lat_lon(wgs84: str) -> Tuple[float, float]:
-    """
-    Extract lat/lon from a common WGS84 string.
-    Many TRV responses use 'POINT (lon lat)'.
-    Return (lat, lon) as floats, or (None, None) if not parsable.
-    """
+    """Extract (lat, lon) from 'POINT (lon lat)' string; return (None, None) if not parsable."""
     try:
-        # Example: 'POINT (18.063 59.334)'
         if "POINT" in wgs84:
             coords = wgs84[wgs84.find("(")+1:wgs84.find(")")].strip()
             parts = coords.split()
             if len(parts) == 2:
-                lon = float(parts[0])
-                lat = float(parts[1])
+                lon = float(parts[0]); lat = float(parts[1])
                 return lat, lon
     except Exception:
         pass
     return (None, None)
 
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Coerce dtypes as your Streamlit app expects.
-    """
+    """Coerce dtypes to what the Streamlit app expects."""
     if "county_no" in df.columns:
         df["county_no"] = pd.to_numeric(df["county_no"], errors="coerce").astype("Int64")
     for col in ["latitude", "longitude"]:
@@ -109,40 +86,31 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["incident_id","message","message_type","location_descriptor","road_number","county_name","status"]:
         if col in df.columns:
             df[col] = df[col].astype("string").str.strip()
-
-    # Ensure datetime-like strings are kept as text here;
-    # your Streamlit loader converts them to datetime with parse_dates.
     return df
 
 def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
-    """
-    Pull from TRV (XML), parse, upsert into SQLite 'incidents' table,
-    and return summary counters used by the Streamlit UI.
-    """
-    # Instantiate TRV client (provide your real API key/base URL)
-    # If your LOGIN is inside the XML, api_key might be unused here.
-    client = TRVClient(api_key="UNUSED_OR_ENV", base_url="https://api.trafikverket.se/v2/data.xml")
+    """Fetch from TRV (XML), parse, upsert into SQLite, return summary."""
+    t0 = time.time()
+
+    # Use the correct host and your real API key
+    print(f"[ETL] Using TRV URL: {BASE_URL}")
+    client = TRVClient(api_key=API_KEY, base_url=BASE_URL, timeout=30)
 
     # Build payload and call API
     payload_xml = _build_query_xml(days_back=days_back).replace("{API_KEY}", _get_api_key())
-    xml_text = client.post(payload_xml)
+    xml_text = client.post(payload_xml)  # TRVClient.post must return XML text
 
     # Parse XML → rows
     rows = _parse_xml(xml_text)
-
-    # DataFrame
     df = pd.DataFrame(rows)
     if df.empty:
-        # Still return a sane summary
-        return {"rows": 0, "pagar": 0, "kommande": 0, "seconds": 0}
+        return {"rows": 0, "pagar": 0, "kommande": 0, "seconds": round(time.time() - t0, 2)}
 
     df = _normalize_df(df)
 
-    # Upsert into SQLite
+    # Upsert into SQLite (conflict on primary key incident_id)
     con = sqlite3.connect(db_path)
     cur = con.cursor()
-
-    # Ensure table exists
     cur.execute("""
         CREATE TABLE IF NOT EXISTS incidents (
             incident_id TEXT PRIMARY KEY,
@@ -161,31 +129,39 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
         )
     """)
 
-    # Upsert logic (replace existing by primary key)
-    df.to_sql("incidents", con, if_exists="append", index=False)
-    # If you need true upsert, do it row by row with INSERT OR REPLACE:
-    # for r in df.to_dict(orient="records"):
-    #     cur.execute("""
-    #         INSERT INTO incidents (...)
-    #         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-    #         ON CONFLICT(incident_id) DO UPDATE SET
-    #             message=excluded.message,
-    #             ...
-    #     """, (...))
-
+    cols = [
+        "incident_id","message","message_type","location_descriptor","road_number",
+        "county_name","county_no","start_time_utc","end_time_utc","modified_time_utc",
+        "latitude","longitude","status"
+    ]
+    sql = """
+        INSERT INTO incidents (
+            incident_id,message,message_type,location_descriptor,road_number,
+            county_name,county_no,start_time_utc,end_time_utc,modified_time_utc,
+            latitude,longitude,status
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(incident_id) DO UPDATE SET
+            message=excluded.message,
+            message_type=excluded.message_type,
+            location_descriptor=excluded.location_descriptor,
+            road_number=excluded.road_number,
+            county_name=excluded.county_name,
+            county_no=excluded.county_no,
+            start_time_utc=excluded.start_time_utc,
+            end_time_utc=excluded.end_time_utc,
+            modified_time_utc=excluded.modified_time_utc,
+            latitude=excluded.latitude,
+            longitude=excluded.longitude,
+            status=excluded.status
+    """
+    cur.executemany(sql, [tuple(r.get(c) for c in cols) for r in df.to_dict(orient="records")])
     con.commit()
-
-    # Summary for Streamlit KPIs
-    pagar = int((df["status"] == "PÅGÅR").sum()) if "status" in df.columns else 0
-    kommande = int((df["status"] == "KOMMANDE").sum()) if "status" in df.columns else 0
-
     con.close()
 
-    # NOTE: If you want elapsed seconds, measure at start/end.
-    return {"rows": int(len(df)), "pagar": pagar, "kommande": kommande, "seconds": 0}
-
+    pagar = int((df["status"] == "PÅGÅR").sum()) if "status" in df.columns else 0
+    kommande = int((df["status"] == "KOMMANDE").sum()) if "status" in df.columns else 0
+    return {"rows": int(len(df)), "pagar": pagar, "kommande": kommande, "seconds": round(time.time() - t0, 2)}
 
 # Helpers
-import os
 def _get_api_key() -> str:
     return os.getenv("TRAFIKVERKET_API_KEY", "")
