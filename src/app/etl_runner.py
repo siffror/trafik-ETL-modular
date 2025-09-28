@@ -71,8 +71,9 @@ def _extract_lat_lon(wgs84: str) -> Tuple[Optional[float], Optional[float]]:
 # ========== Bygg XML-fråga ==========
 def _build_query_xml(days_back: int = 1) -> str:
     """
-    Frågar Situation (schemaversion 1) och filtrerar på Situation.PublicationTime.
-    INTE Deviation.* i FILTER. Inkludera hela Deviation-noden.
+    Bygg en giltig TRV-fråga för Situation:
+    - Filtrera på Situation.PublicationTime
+    - Inkludera hela Deviation-noden (inte Deviation.* fält)
     """
     since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
     return f"""<REQUEST>
@@ -83,97 +84,76 @@ def _build_query_xml(days_back: int = 1) -> str:
     </FILTER>
     <INCLUDE>Id</INCLUDE>
     <INCLUDE>PublicationTime</INCLUDE>
+    <INCLUDE>VersionTime</INCLUDE>
     <INCLUDE>Deviation</INCLUDE>
   </QUERY>
 </REQUEST>"""
 
+
 # ========== Parser ==========
 def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
     """
-    Gå igenom alla Situation → Deviation och lyft ut fält försiktigt.
+    Parsa Situation + inbäddade Deviation-noder.
+    Vi flatten: 1 rad per Deviation (fallback till Situation om något saknas).
     """
+    def _txt(node, path: str) -> str:
+        el = node.find(path)
+        return el.text.strip() if (el is not None and el.text) else ""
+
     root = ET.fromstring(xml_text)
     rows: List[Dict[str, Any]] = []
 
     for sit in root.findall(".//Situation"):
-        sit_id = _first_text(sit, ["Id"])
-        publication_time = _first_text(sit, ["PublicationTime"])
+        sit_id  = _txt(sit, "Id")
+        pub     = _txt(sit, "PublicationTime")
+        ver     = _txt(sit, "VersionTime")
 
-        deviations = sit.findall(".//Deviation")
-        if not deviations:
-            # Fallback: skapa en rad på situation-nivå (tomma dev-fält)
+        devs = sit.findall(".//Deviation")
+        if not devs:
+            # fallback: rad på Situation-nivå (om inga Deviation finns)
             rows.append({
-                "incident_id": sit_id or "",
-                "message": "",
-                "message_type": "",
-                "location_descriptor": "",
-                "road_number": "",
-                "county_name": "",
-                "county_no": "",
-                "start_time_utc": publication_time,
+                "incident_id": sit_id,
+                "message": _txt(sit, "Message"),
+                "message_type": _txt(sit, "MessageType"),
+                "location_descriptor": _txt(sit, "LocationDescriptor"),
+                "road_number": _txt(sit, "RoadNumber"),
+                "county_name": _txt(sit, "CountyName"),
+                "county_no": _txt(sit, "CountyNo"),
+                "start_time_utc": pub,  # inget bättre i detta fall
                 "end_time_utc": "",
-                "modified_time_utc": publication_time,
+                "modified_time_utc": ver,
                 "latitude": None,
                 "longitude": None,
-                "status": "PÅGÅR"  # antag pågår om vi inte vet bättre
+                "status": _txt(sit, "Status"),
             })
             continue
 
-        for idx, dev in enumerate(deviations, start=1):
-            dev_id = _first_text(dev, ["Id", "DeviationId", ".//Id"]) or f"{sit_id}#{idx}"
-
-            # tider
-            start_t = _first_text(dev, ["StartTime", ".//StartTime"]) or publication_time
-            end_t   = _first_text(dev, ["EndTime", ".//EndTime"])
-            mod_t   = _first_text(dev, ["Updated", "ModifiedTime", ".//Updated", ".//ModifiedTime"]) or publication_time
-
-            # plats & väg
-            county_no   = _first_text(dev, ["CountyNo", ".//CountyNo"])
-            county_name = _first_text(dev, ["CountyName", ".//CountyName"])
-            road_number = _first_text(dev, ["RoadNumber", ".//RoadNumber"])
-            loc_desc    = _first_text(dev, ["LocationDescriptor", ".//LocationDescriptor"])
-
-            # meddelande/typ
-            message      = _first_text(dev, ["Message", ".//Message"])
-            message_type = _first_text(dev, ["MessageType", ".//MessageType"])
-
-            # geometri: testa flera möjliga vägar
-            wgs84 = _first_text(dev, [
-                "Geometry/WGS84",
-                "Location/Geometry/WGS84",
-                ".//Geometry/WGS84",
-                ".//WGS84",
-            ])
+        for d in devs:
+            # För geometri kan det variera var den ligger
+            wgs84 = (
+                _txt(d, "Geometry/WGS84")
+                or _txt(d, "Location/Geometry/WGS84")
+            )
             lat, lon = _extract_lat_lon(wgs84)
 
-            # status: om inget kommer från TRV, härled av StartTime
-            status_raw = _first_text(dev, ["Status", ".//Status"])
-            status = status_raw
-            if not status:
-                dt_start = _parse_dt(start_t)
-                now = datetime.now(timezone.utc)
-                if dt_start and dt_start > now:
-                    status = "KOMMANDE"
-                else:
-                    status = "PÅGÅR"
-
             rows.append({
-                "incident_id": dev_id,
-                "message": message,
-                "message_type": message_type,
-                "location_descriptor": loc_desc,
-                "road_number": road_number,
-                "county_name": county_name,
-                "county_no": county_no,
-                "start_time_utc": start_t,
-                "end_time_utc": end_t,
-                "modified_time_utc": mod_t,
+                "incident_id": _txt(d, "Id") or sit_id,
+                "message": _txt(d, "Message") or _txt(sit, "Message"),
+                "message_type": _txt(d, "MessageType") or _txt(sit, "MessageType"),
+                "location_descriptor": _txt(d, "LocationDescriptor"),
+                "road_number": _txt(d, "RoadNumber"),
+                "county_name": _txt(d, "CountyName") or _txt(d, "Location/CountyName"),
+                "county_no": _txt(d, "CountyNo") or _txt(d, "Location/CountyNo"),
+                "start_time_utc": _txt(d, "StartTime") or pub,
+                "end_time_utc": _txt(d, "EndTime"),
+                "modified_time_utc": _txt(d, "ModifiedTime") or ver,
                 "latitude": lat,
                 "longitude": lon,
-                "status": status,
+                "status": _txt(d, "Status") or _txt(sit, "Status"),
             })
 
     return rows
+
 
 # ========== Normalisering ==========
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
