@@ -16,20 +16,31 @@ BASE_URL = os.getenv("TRAFIKVERKET_URL", "https://api.trafikinfo.trafikverket.se
 
 
 def _build_query_xml(days_back: int = 1) -> str:
-    """
-    Build a minimal TRV XML query.
-    We include the whole Deviation node to avoid invalid attribute errors.
-    """
+    """Build minimal TRV XML query for Situation; filter on Situation-level field."""
     since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
     return f"""<REQUEST>
   <LOGIN authenticationkey="{{API_KEY}}"/>
   <QUERY objecttype="Situation" schemaversion="1">
     <FILTER>
-      <GT name="Deviation.StartTime" value="{since}"/>
+      <GT name="PublicationTime" value="{since}"/>
     </FILTER>
-    <INCLUDE>Deviation</INCLUDE>
+
+    <!-- Situation id for primary key -->
+    <INCLUDE>Id</INCLUDE>
+
+    <!-- Deviation fields (valid under Situation) -->
+    <INCLUDE>Deviation.StartTime</INCLUDE>
+    <INCLUDE>Deviation.EndTime</INCLUDE>
+    <INCLUDE>Deviation.ModifiedTime</INCLUDE>
+    <INCLUDE>Deviation.Message</INCLUDE>
+    <INCLUDE>Deviation.MessageType</INCLUDE>
+    <INCLUDE>Deviation.RoadNumber</INCLUDE>
+    <INCLUDE>Deviation.LocationDescriptor</INCLUDE>
+    <INCLUDE>Deviation.CountyNo</INCLUDE>
+    <INCLUDE>Deviation.Geometry.WGS84</INCLUDE>
   </QUERY>
 </REQUEST>"""
+
 
 
 def _extract_lat_lon(wgs84: str) -> Tuple[float | None, float | None]:
