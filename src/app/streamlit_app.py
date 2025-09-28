@@ -194,57 +194,72 @@ _EXPECTED_COLS = [
     "latitude","longitude","status",
 ]
 
-@st.cache_data(ttl=180)
-def load_data(db_path: str) -> pd.DataFrame:
-    if not os.path.exists(db_path):
-        return pd.DataFrame(columns=_EXPECTED_COLS)
+@st.cache_data(ttl=300)
+def load_data() -> pd.DataFrame:
+    cols = [
+        "incident_id","message","message_type","location_descriptor","road_number",
+        "county_name","county_no","start_time_utc","end_time_utc","modified_time_utc",
+        "latitude","longitude","status"
+    ]
 
-    con = sqlite3.connect(db_path)
+    # Databasfil saknas -> tom df
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame(columns=cols)
+
+    con = sqlite3.connect(DB_PATH)
     try:
-        # försök med exakt SELECT (snabbt)
-        query = """
-            SELECT incident_id, message, message_type, location_descriptor,
-               road_number, county_name, county_no,
-               start_time_utc, end_time_utc, modified_time_utc,
-               latitude, longitude, status
-            FROM incidents
-        """
-        df = pd.read_sql_query(
-            query, con,
-            parse_dates=["start_time_utc", "end_time_utc", "modified_time_utc"]    
+        # Finns tabellen?
+        exists = pd.read_sql_query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='incidents';",
+            con
         )
+        if exists.empty:
+            return pd.DataFrame(columns=cols)
 
-    except Exception:
-        # om kolumner saknas: hämta allt och lappa
-        try:
-            df = pd.read_sql_query("SELECT * FROM incidents", con)
-            missing = [c for c in _EXPECTED_COLS if c not in df.columns]
-            for c in missing:
-                df[c] = pd.NA
-            st.warning(t("schema_warn"))
-            df = df[_EXPECTED_COLS]
-        except Exception:
-            df = pd.DataFrame(columns=_EXPECTED_COLS)
+        # Hämta allt (vi filtrerar med sidofilter sedan)
+        df = pd.read_sql_query(
+            """
+            SELECT incident_id, message, message_type, location_descriptor,
+                   road_number, county_name, county_no,
+                   start_time_utc, end_time_utc, modified_time_utc,
+                   latitude, longitude, status
+            FROM incidents
+            """,
+            con
+        )
     finally:
         con.close()
 
-    # typer
+    # Dtype-normalisering
     if "county_no" in df.columns:
         df["county_no"] = pd.to_numeric(df["county_no"], errors="coerce").astype("Int64")
-    for col in ["latitude","longitude"]:
+
+    for col in ["latitude", "longitude"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
     for col in ["incident_id","message","message_type","location_descriptor","road_number","county_name","status"]:
         if col in df.columns:
             df[col] = df[col].astype("string").str.strip()
 
-    # datum → dt64[ns, UTC] om finns
-    for col in ["start_time_utc","end_time_utc","modified_time_utc"]:
-        if col in df.columns:
-            s = pd.to_datetime(df[col], errors="coerce", utc=True)
-            df[col] = s
+    # Datum -> UTC (slipper FutureWarning om mixade tidszoner)
+    for dtcol in ["start_time_utc","end_time_utc","modified_time_utc"]:
+        if dtcol in df.columns:
+            df[dtcol] = pd.to_datetime(df[dtcol], errors="coerce", utc=True)
 
     return df
+
+try:
+    df = load_data()
+except Exception as e:
+    st.error(f"Misslyckades att läsa databasen: {e}")
+    df = pd.DataFrame(columns=[
+        "incident_id","message","message_type","location_descriptor","road_number",
+        "county_name","county_no","start_time_utc","end_time_utc","modified_time_utc",
+        "latitude","longitude","status"
+    ])
+
+
 
 @st.cache_data(ttl=300)
 def load_data():
