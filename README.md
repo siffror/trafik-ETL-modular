@@ -48,7 +48,7 @@ This will automatically create or update the trafik.db file with the latest inci
 Step 2 – Start the Streamlit dashboard locally streamlit run src/app/streamlit_app.py
 
 📂 Project Structure
-
+```
 .github/workflows/tv-etl.yml    # GitHub Actions workflow
 src/
  ├── app/
@@ -74,7 +74,7 @@ src/
 requirements.txt
 structure.txt
 trafik.db
-
+```
 
 📷 Dashboard Example
 
