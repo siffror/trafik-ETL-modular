@@ -1,176 +1,144 @@
 # src/app/etl_runner.py
-
 import os
 import time
 import sqlite3
-from typing import Dict, List, Tuple, Optional, Any
-import pandas as pd
+from typing import List, Dict, Any, Tuple
 from datetime import datetime, timedelta, timezone
 from xml.etree import ElementTree as ET
 
+import pandas as pd
+
 from src.trv.client import TRVClient
 
-# -----------------------------------------------------------
-# Konfiguration
-# -----------------------------------------------------------
-BASE_URL = os.getenv(
-    "TRAFIKVERKET_URL",
-    "https://api.trafikinfo.trafikverket.se/v2/data.xml",
-)
-
-# -----------------------------------------------------------
-# Hjälpfunktioner
-# -----------------------------------------------------------
-def _require_api_key() -> str:
-    key = (os.getenv("TRAFIKVERKET_API_KEY") or "").strip()
-    if not key:
-        raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
-    return key
+# --- Configuration from environment
+API_KEY = os.getenv("TRAFIKVERKET_API_KEY", "")
+BASE_URL = os.getenv("TRAFIKVERKET_URL", "https://api.trafikinfo.trafikverket.se/v2/data.xml")
 
 
-def _extract_lat_lon(wgs84: str) -> Tuple[Optional[float], Optional[float]]:
-    """Extrahera (lat, lon) ur 'POINT (lon lat)'. Faller tyst till (None, None)."""
+def _build_query_xml(days_back: int = 1) -> str:
+    """
+    Build a minimal TRV XML query.
+    We include the whole Deviation node to avoid invalid attribute errors.
+    """
+    since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"""<REQUEST>
+  <LOGIN authenticationkey="{{API_KEY}}"/>
+  <QUERY objecttype="Situation" schemaversion="1">
+    <FILTER>
+      <GT name="Deviation.StartTime" value="{since}"/>
+    </FILTER>
+    <INCLUDE>Deviation</INCLUDE>
+  </QUERY>
+</REQUEST>"""
+
+
+def _extract_lat_lon(wgs84: str) -> Tuple[float | None, float | None]:
+    """
+    Extract (lat, lon) from a WGS84 string like 'POINT (lon lat)'.
+    Return (None, None) if not parsable.
+    """
     try:
         if wgs84 and "POINT" in wgs84:
-            coords = wgs84[wgs84.find("(") + 1 : wgs84.find(")")]
-            parts = coords.split()
-            if len(parts) == 2:
-                lon = float(parts[0])
-                lat = float(parts[1])
-                return lat, lon
+            coords = wgs84[wgs84.find("(") + 1 : wgs84.find(")")].strip()
+            lon_str, lat_str = coords.split()
+            return float(lat_str), float(lon_str)
     except Exception:
         pass
     return None, None
 
 
+def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
+    """
+    Parse TRV XML into a list of incident dicts by iterating Situation/Deviation.
+    Missing fields are returned as empty strings (or None for coordinates).
+    """
+    root = ET.fromstring(xml_text)
+    rows: List[Dict[str, Any]] = []
+
+    for sit in root.findall(".//Situation"):
+        for dev in sit.findall("Deviation"):
+            def text(tag: str) -> str:
+                el = dev.find(tag)
+                return el.text.strip() if (el is not None and el.text) else ""
+
+            wgs84 = text("Geometry/WGS84")
+            lat, lon = _extract_lat_lon(wgs84)
+
+            rows.append({
+                "incident_id": text("Id"),
+                "message": text("Message"),
+                "message_type": text("MessageType"),
+                "location_descriptor": text("LocationDescriptor"),
+                "road_number": text("RoadNumber"),
+                "county_name": text("CountyName"),
+                "county_no": text("CountyNo"),
+                "start_time_utc": text("StartTime"),
+                "end_time_utc": text("EndTime"),
+                "modified_time_utc": text("ModifiedTime"),
+                "latitude": lat,
+                "longitude": lon,
+                "status": text("Status"),
+            })
+
+    return rows
+
+
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Typsätter kolumner som appen/DB förväntar sig."""
+    """
+    Coerce dtypes to what the Streamlit app expects.
+    Do not convert the time strings to datetimes here; the app handles that.
+    """
     if "county_no" in df.columns:
         df["county_no"] = pd.to_numeric(df["county_no"], errors="coerce").astype("Int64")
 
-    for col in ("latitude", "longitude"):
+    for col in ["latitude", "longitude"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    text_cols = (
-        "incident_id",
-        "message",
-        "message_type",
-        "location_descriptor",
-        "road_number",
-        "county_name",
-        "status",
-    )
-    for col in text_cols:
+    for col in [
+        "incident_id", "message", "message_type", "location_descriptor",
+        "road_number", "county_name", "status",
+        "start_time_utc", "end_time_utc", "modified_time_utc",
+    ]:
         if col in df.columns:
             df[col] = df[col].astype("string").str.strip()
 
     return df
 
 
-# -----------------------------------------------------------
-# TRV: fråga direkt på Deviation
-# -----------------------------------------------------------
-def build_trv_payload_deviation(api_key: str, days_back: int = 1) -> str:
+def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
     """
-    Frågar objektet Deviation direkt (schemaversion 1).
-    Filtrerar på Deviation.StartTime >= since.
-    """
-    since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%S")
-    return f"""<REQUEST>
-  <LOGIN authenticationkey="{api_key}"/>
-  <QUERY objecttype="Deviation" schemaversion="1">
-    <FILTER>
-      <GT name="StartTime" value="{since}"/>
-    </FILTER>
-
-    <INCLUDE>Id</INCLUDE>
-    <INCLUDE>Message</INCLUDE>
-    <INCLUDE>MessageType</INCLUDE>
-    <INCLUDE>LocationDescriptor</INCLUDE>
-    <INCLUDE>RoadNumber</INCLUDE>
-    <INCLUDE>CountyNo</INCLUDE>
-    <INCLUDE>StartTime</INCLUDE>
-    <INCLUDE>EndTime</INCLUDE>
-    <INCLUDE>Status</INCLUDE>
-    <INCLUDE>Geometry.WGS84</INCLUDE>
-  </QUERY>
-</REQUEST>"""
-
-
-def _parse_xml_deviation(xml_text: str) -> List[Dict[str, Any]]:
-    """
-    Parsar en lista av Deviation-noder till platta rader.
-    """
-    root = ET.fromstring(xml_text)
-    rows: List[Dict[str, Any]] = []
-
-    for dev in root.findall(".//Deviation"):
-        def dtext(path: str) -> str:
-            v = dev.findtext(path)
-            return v.strip() if v else ""
-
-        wgs84 = dtext("Geometry/WGS84")
-        lat, lon = _extract_lat_lon(wgs84)
-
-        rows.append(
-            {
-                "incident_id": dtext("Id"),
-                "message": dtext("Message"),
-                "message_type": dtext("MessageType"),
-                "location_descriptor": dtext("LocationDescriptor"),
-                "road_number": dtext("RoadNumber"),
-                "county_name": "",  # CountyNo -> namn kräver egen mapping
-                "county_no": dtext("CountyNo"),
-                "start_time_utc": dtext("StartTime"),
-                "end_time_utc": dtext("EndTime"),
-                "modified_time_utc": "",  # ej i Deviation; kan fyllas via Situation vid behov
-                "latitude": lat,
-                "longitude": lon,
-                "status": dtext("Status"),
-            }
-        )
-
-    return rows
-
-
-# -----------------------------------------------------------
-# Publik ETL
-# -----------------------------------------------------------
-def run_etl(db_path: str, days_back: int = 1) -> Dict[str, int]:
-    """
-    Hämtar Deviation från TRV, parsar, upsertar till SQLite och returnerar en summering.
+    Fetch data from TRV (XML), parse, upsert into SQLite, return summary.
     """
     t0 = time.time()
 
-    api_key = _require_api_key()
-    url = BASE_URL
+    # Fail fast if the API key is missing
+    if not API_KEY:
+        raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
+
+    url = BASE_URL or "https://api.trafikinfo.trafikverket.se/v2/data.xml"
     print(f"[ETL] Using TRV URL: {url}", flush=True)
 
-    client = TRVClient(api_key=api_key, base_url=url, timeout=30)
+    client = TRVClient(api_key=API_KEY, base_url=url, timeout=30)
 
-    # 1) Hämta XML (DEVIATION)
-    payload_xml = build_trv_payload_deviation(api_key=api_key, days_back=days_back)
+    # Build payload and call API (mask key in logs)
+    payload_xml = _build_query_xml(days_back=days_back).replace("{API_KEY}", API_KEY)
+    print("[ETL] Payload (masked):", payload_xml.replace(API_KEY, "***"), flush=True)
+
     xml_text = client.post(payload_xml)
 
-    # 2) XML -> DataFrame
-    rows = _parse_xml_deviation(xml_text)
+    # Parse XML → DataFrame
+    rows = _parse_xml(xml_text)
     df = pd.DataFrame(rows)
     if df.empty:
-        return {
-            "rows": 0,
-            "pagar": 0,
-            "kommande": 0,
-            "seconds": round(time.time() - t0, 2),
-        }
+        return {"rows": 0, "pagar": 0, "kommande": 0, "seconds": round(time.time() - t0, 2)}
 
     df = _normalize_df(df)
 
-    # 3) Upsert till SQLite
+    # Upsert into SQLite (conflict on primary key incident_id)
     con = sqlite3.connect(db_path)
     cur = con.cursor()
-    cur.execute(
-        """
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS incidents (
             incident_id TEXT PRIMARY KEY,
             message TEXT,
@@ -186,24 +154,14 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, int]:
             longitude REAL,
             status TEXT
         )
-        """
-    )
+    """)
 
     cols = [
-        "incident_id",
-        "message",
-        "message_type",
-        "location_descriptor",
-        "road_number",
-        "county_name",
-        "county_no",
-        "start_time_utc",
-        "end_time_utc",
-        "modified_time_utc",
-        "latitude",
-        "longitude",
-        "status",
+        "incident_id","message","message_type","location_descriptor","road_number",
+        "county_name","county_no","start_time_utc","end_time_utc","modified_time_utc",
+        "latitude","longitude","status"
     ]
+
     sql = """
         INSERT INTO incidents (
             incident_id, message, message_type, location_descriptor, road_number,
@@ -224,9 +182,8 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, int]:
             longitude=excluded.longitude,
             status=excluded.status
     """
-    cur.executemany(
-        sql, [tuple(r.get(c) for c in cols) for r in df.to_dict(orient="records")]
-    )
+
+    cur.executemany(sql, [tuple(r.get(c) for c in cols) for r in df.to_dict(orient="records")])
     con.commit()
     con.close()
 
