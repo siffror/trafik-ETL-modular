@@ -9,15 +9,70 @@ from typing import List, Dict, Any, Tuple, Optional
 
 from src.trv.client import TRVClient
 
-# ---- Miljövariabler ----
+# ========== Miljökonfig ==========
 API_KEY = os.getenv("TRAFIKVERKET_API_KEY", "")
 BASE_URL = os.getenv("TRAFIKVERKET_URL", "https://api.trafikinfo.trafikverket.se/v2/data.xml")
+ETL_DEBUG = os.getenv("ETL_DEBUG", "")
 
-# ---------------- XML byggare ----------------
+# ========== Hjälpare ==========
+def _iso_now_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def _mask_key(xml_text: str) -> str:
+    # maska authenticationkey="...."
+    return (
+        xml_text
+        .replace(API_KEY, "****") if API_KEY else xml_text
+    ).replace(
+        'authenticationkey="', 'authenticationkey="****'
+    )
+
+def _first_text(node: ET.Element, paths: List[str]) -> str:
+    for p in paths:
+        el = node.find(p)
+        if el is not None and el.text:
+            return el.text.strip()
+    return ""
+
+def _parse_dt(s: str) -> Optional[datetime]:
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            continue
+    try:
+        # sista chans: pandas
+        return pd.to_datetime(s, utc=True).to_pydatetime()
+    except Exception:
+        return None
+
+def _extract_lat_lon(wgs84: str) -> Tuple[Optional[float], Optional[float]]:
+    """Förväntar 'POINT (lon lat)' → (lat, lon)."""
+    try:
+        if not wgs84:
+            return (None, None)
+        if "POINT" in wgs84.upper():
+            start = wgs84.find("(")
+            end = wgs84.find(")")
+            if start >= 0 and end > start:
+                coords = wgs84[start + 1 : end].strip().split()
+                if len(coords) == 2:
+                    lon = float(coords[0]); lat = float(coords[1])
+                    return (lat, lon)
+    except Exception:
+        pass
+    return (None, None)
+
+# ========== Bygg XML-fråga ==========
 def _build_query_xml(days_back: int = 1) -> str:
     """
-    Fråga Situation (schemaversion 1) och inkludera hela Deviation.
-    Filtrera på ett fält som finns på Situation, t.ex. PublicationTime.
+    Frågar Situation (schemaversion 1) och filtrerar på Situation.PublicationTime.
+    INTE Deviation.* i FILTER. Inkludera hela Deviation-noden.
     """
     since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
     return f"""<REQUEST>
@@ -32,96 +87,96 @@ def _build_query_xml(days_back: int = 1) -> str:
   </QUERY>
 </REQUEST>"""
 
-# ---------------- Hjälpare ----------------
-def _extract_lat_lon(wkt_or_wgs84: str) -> Tuple[Optional[float], Optional[float]]:
-    """Försök tolka 'POINT (lon lat)' eller extrahera två första siffror."""
-    if not wkt_or_wgs84:
-        return (None, None)
-    s = str(wkt_or_wgs84)
-    try:
-        if "POINT" in s:
-            coords = s[s.find("(")+1:s.find(")")].strip()
-            parts = coords.split()
-            if len(parts) >= 2:
-                lon = float(parts[0]); lat = float(parts[1])
-                return (lat, lon)
-    except Exception:
-        pass
-    # fallback: plocka ut första två tal
-    import re
-    nums = re.findall(r"[-+]?\d+(?:\.\d+)?", s)
-    if len(nums) >= 2:
-        lon = float(nums[0]); lat = float(nums[1])
-        return (lat, lon)
-    return (None, None)
-
-def _txt(node: ET.Element, path: str) -> str:
-    el = node.find(path)
-    return (el.text.strip() if (el is not None and el.text) else "")
-
-def _first_txt(node: ET.Element, paths: List[str]) -> str:
-    for p in paths:
-        v = _txt(node, p)
-        if v:
-            return v
-    return ""
-
-# ---------------- XML → rader ----------------
+# ========== Parser ==========
 def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
     """
-    Parserar Situation-svar. Varje Situation kan ha flera Deviation.
-    Vi skapar en rad per Deviation.
+    Gå igenom alla Situation → Deviation och lyft ut fält försiktigt.
     """
     root = ET.fromstring(xml_text)
     rows: List[Dict[str, Any]] = []
 
     for sit in root.findall(".//Situation"):
-        sit_id = _txt(sit, "Id")
-        sit_pub = _txt(sit, "PublicationTime")
+        sit_id = _first_text(sit, ["Id"])
+        publication_time = _first_text(sit, ["PublicationTime"])
 
-        deviations = sit.findall("./Deviation") or []
+        deviations = sit.findall(".//Deviation")
         if not deviations:
-            # Skapa ev. en tom rad om du vill, men normalt hoppar vi över.
+            # Fallback: skapa en rad på situation-nivå (tomma dev-fält)
+            rows.append({
+                "incident_id": sit_id or "",
+                "message": "",
+                "message_type": "",
+                "location_descriptor": "",
+                "road_number": "",
+                "county_name": "",
+                "county_no": "",
+                "start_time_utc": publication_time,
+                "end_time_utc": "",
+                "modified_time_utc": publication_time,
+                "latitude": None,
+                "longitude": None,
+                "status": "PÅGÅR"  # antag pågår om vi inte vet bättre
+            })
             continue
 
-        for i, dev in enumerate(deviations):
-            # Fält som oftast ligger på Deviation
-            incident_id = _first_txt(dev, ["Id"]) or (sit_id + f":{i}")
-            message = _first_txt(dev, ["Message"])
-            message_type = _first_txt(dev, ["MessageType"])
-            location_descriptor = _first_txt(dev, ["LocationDescriptor"])
-            road_number = _first_txt(dev, ["RoadNumber"])
-            county_no = _first_txt(dev, ["CountyNo"])
-            county_name = _first_txt(dev, ["CountyName"])  # finns inte alltid
-            status = _first_txt(dev, ["Status"])           # finns inte alltid
+        for idx, dev in enumerate(deviations, start=1):
+            dev_id = _first_text(dev, ["Id", "DeviationId", ".//Id"]) or f"{sit_id}#{idx}"
 
-            start_time = _first_txt(dev, ["StartTime"])
-            end_time = _first_txt(dev, ["EndTime"])
-            modified_time = sit_pub  # använd Situation.PublicationTime som "modified" proxy
+            # tider
+            start_t = _first_text(dev, ["StartTime", ".//StartTime"]) or publication_time
+            end_t   = _first_text(dev, ["EndTime", ".//EndTime"])
+            mod_t   = _first_text(dev, ["Updated", "ModifiedTime", ".//Updated", ".//ModifiedTime"]) or publication_time
 
-            # Geometri brukar ligga under Deviation/Geometry/WGS84
-            wgs84 = _first_txt(dev, ["Geometry/WGS84", ".//Geometry/WGS84"])
+            # plats & väg
+            county_no   = _first_text(dev, ["CountyNo", ".//CountyNo"])
+            county_name = _first_text(dev, ["CountyName", ".//CountyName"])
+            road_number = _first_text(dev, ["RoadNumber", ".//RoadNumber"])
+            loc_desc    = _first_text(dev, ["LocationDescriptor", ".//LocationDescriptor"])
+
+            # meddelande/typ
+            message      = _first_text(dev, ["Message", ".//Message"])
+            message_type = _first_text(dev, ["MessageType", ".//MessageType"])
+
+            # geometri: testa flera möjliga vägar
+            wgs84 = _first_text(dev, [
+                "Geometry/WGS84",
+                "Location/Geometry/WGS84",
+                ".//Geometry/WGS84",
+                ".//WGS84",
+            ])
             lat, lon = _extract_lat_lon(wgs84)
 
+            # status: om inget kommer från TRV, härled av StartTime
+            status_raw = _first_text(dev, ["Status", ".//Status"])
+            status = status_raw
+            if not status:
+                dt_start = _parse_dt(start_t)
+                now = datetime.now(timezone.utc)
+                if dt_start and dt_start > now:
+                    status = "KOMMANDE"
+                else:
+                    status = "PÅGÅR"
+
             rows.append({
-                "incident_id": incident_id,
+                "incident_id": dev_id,
                 "message": message,
                 "message_type": message_type,
-                "location_descriptor": location_descriptor,
+                "location_descriptor": loc_desc,
                 "road_number": road_number,
                 "county_name": county_name,
                 "county_no": county_no,
-                "start_time_utc": start_time,
-                "end_time_utc": end_time,
-                "modified_time_utc": modified_time,
+                "start_time_utc": start_t,
+                "end_time_utc": end_t,
+                "modified_time_utc": mod_t,
                 "latitude": lat,
                 "longitude": lon,
                 "status": status,
             })
+
     return rows
 
+# ========== Normalisering ==========
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalisera dtypes så Streamlit-filtret funkar stabilt."""
     if "county_no" in df.columns:
         df["county_no"] = pd.to_numeric(df["county_no"], errors="coerce").astype("Int64")
     for col in ["latitude", "longitude"]:
@@ -132,9 +187,11 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = df[col].astype("string").str.strip()
     return df
 
-# ---------------- Huvud-ETL ----------------
+# ========== ETL-huvud ==========
 def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
-    """Hämtar XML från TRV, parsar, uppsertar i SQLite, och returnerar KPI-summering."""
+    """
+    Hämta från TRV (XML) → parse → upsert i SQLite → returnera summering.
+    """
     t0 = time.time()
 
     if not API_KEY:
@@ -145,9 +202,17 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
 
     client = TRVClient(api_key=API_KEY, base_url=url, timeout=30)
 
-    # Bygg payload och hämta
-    payload_xml = _build_query_xml(days_back).replace("{API_KEY}", API_KEY)
+    # Bygg & logga payload (maskad)
+    payload_xml = _build_query_xml(days_back=days_back).replace("{API_KEY}", API_KEY)
+    if ETL_DEBUG:
+        print("[ETL] Outgoing XML (masked):")
+        print(_mask_key(payload_xml))
+
+    # Anropa TRV
     xml_text = client.post(payload_xml)
+    if ETL_DEBUG:
+        print("[ETL] Incoming XML (first 1200 chars):")
+        print((_mask_key(xml_text) if API_KEY else xml_text)[:1200])
 
     # Parse → DataFrame
     rows = _parse_xml(xml_text)
@@ -157,7 +222,7 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
 
     df = _normalize_df(df)
 
-    # SQLite upsert
+    # Upsert i SQLite
     con = sqlite3.connect(db_path)
     cur = con.cursor()
     cur.execute("""
@@ -177,6 +242,7 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
             status TEXT
         )
     """)
+
     cols = [
         "incident_id","message","message_type","location_descriptor","road_number",
         "county_name","county_no","start_time_utc","end_time_utc","modified_time_utc",
@@ -206,11 +272,6 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
     con.commit()
     con.close()
 
-    pagar = int((df.get("status") == "PÅGÅR").sum()) if "status" in df.columns else 0
-    kommande = int((df.get("status") == "KOMMANDE").sum()) if "status" in df.columns else 0
-    return {
-        "rows": int(len(df)),
-        "pagar": pagar,
-        "kommande": kommande,
-        "seconds": round(time.time() - t0, 2),
-    }
+    pagar = int((df["status"] == "PÅGÅR").sum()) if "status" in df.columns else 0
+    kommande = int((df["status"] == "KOMMANDE").sum()) if "status" in df.columns else 0
+    return {"rows": int(len(df)), "pagar": pagar, "kommande": kommande, "seconds": round(time.time() - t0, 2)}
