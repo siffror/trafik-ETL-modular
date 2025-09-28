@@ -53,7 +53,7 @@ Step 2 – Start the Streamlit dashboard locally streamlit run src/app/streamlit
 src/
  ├── app/
  │    ├── __init__.py
- │    ├── etl_runner.py
+ │    ├── etl_runner.py         # Run ETL pipeline (orchestration script)
  │    └── streamlit_app.py      # Streamlit dashboard
  ├── trv/
  │    ├── __init__.py
@@ -69,11 +69,12 @@ src/
  │    └── __init__.py
  ├── cli.py                     # Command-line interface
  └── logger.py                  # Logging
-.env
-.gitignore
-requirements.txt
-structure.txt
-trafik.db
+.env                             # Environment variables
+.gitignore                       # Git ignore rules
+requirements.txt                 # Python dependencies
+structure.txt                    # Project tree
+trafik.db                        # Local SQLite database
+
 ```
 
 ## 🎥 Demo
