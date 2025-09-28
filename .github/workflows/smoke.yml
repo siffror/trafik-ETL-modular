@@ -1,0 +1,11 @@
+name: Smoke
+
+on:
+  workflow_dispatch: {}   # kör manuellt från Actions
+
+jobs:
+  ok:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say hello
+        run: echo "Actions works ✅"
