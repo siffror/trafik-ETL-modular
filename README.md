@@ -76,7 +76,9 @@ structure.txt
 trafik.db
 ```
 
-📷 Dashboard Example
+## 🎥 Demo
+
+![Dashboard Demo](assets/2025-09-28_14-51-21.gif)
 
 
 
