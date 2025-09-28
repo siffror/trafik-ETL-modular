@@ -204,12 +204,16 @@ def load_data(db_path: str) -> pd.DataFrame:
         # försök med exakt SELECT (snabbt)
         query = """
             SELECT incident_id, message, message_type, location_descriptor,
-                   road_number, county_name, county_no,
-                   start_time_utc, end_time_utc, modified_time_utc,
-                   latitude, longitude, status
+               road_number, county_name, county_no,
+               start_time_utc, end_time_utc, modified_time_utc,
+               latitude, longitude, status
             FROM incidents
         """
-        df = pd.read_sql_query(query, con)
+        df = pd.read_sql_query(
+            query, con,
+            parse_dates=["start_time_utc", "end_time_utc", "modified_time_utc"]    
+        )
+
     except Exception:
         # om kolumner saknas: hämta allt och lappa
         try:
