@@ -390,15 +390,13 @@ else:
     }
     style_map = {"light": "light", "dark": "dark", "road": "road", "satellite": "satellite"}
 
-    st.pydeck_chart(
-        pdk.Deck(
-            layers=layers,
-            initial_view_state=pdk.ViewState(latitude=lat_center, longitude=lon_center, zoom=zoom),
-            map_style=style_map.get(map_style, "light"),
-            tooltip=tooltip,
-        )
-        st.pydeck_chart(deck),
-    )
+st.pydeck_chart(pdk.Deck(
+    layers=layers,
+    initial_view_state=pdk.ViewState(latitude=lat_center, longitude=lon_center, zoom=zoom),
+    map_style=style_map.get(map_style, "light"),
+    tooltip=tooltip,
+))
+
     
 
 # ---------------------- TABELL ----------------------
