@@ -25,21 +25,21 @@ def _build_query_xml(days_back: int = 1) -> str:
       <GT name="PublicationTime" value="{since}"/>
     </FILTER>
 
-    <!-- Situation id for primary key -->
+    <!-- Situation level fields -->
     <INCLUDE>Id</INCLUDE>
-    <INCLUDE>ModifiedTime</INCLUDE>
     <INCLUDE>PublicationTime</INCLUDE>
+    <INCLUDE>VersionTime</INCLUDE>
 
-    <!-- Deviation fields (valid under Situation) -->
+    <!-- Deviation fields (based on forum response example) -->
+    <INCLUDE>Deviation.Geometry.WGS84</INCLUDE>
+    <INCLUDE>Deviation.IconId</INCLUDE>
+    <INCLUDE>Deviation.MessageCode</INCLUDE>
+    <INCLUDE>Deviation.RoadNumber</INCLUDE>
+    <INCLUDE>Deviation.LocationDescriptor</INCLUDE>
     <INCLUDE>Deviation.StartTime</INCLUDE>
     <INCLUDE>Deviation.EndTime</INCLUDE>
     <INCLUDE>Deviation.Message</INCLUDE>
-    <INCLUDE>Deviation.MessageType</INCLUDE>
-    <INCLUDE>Deviation.RoadNumber</INCLUDE>
     <INCLUDE>Deviation.CountyNo</INCLUDE>
-    <INCLUDE>Deviation.Geometry.WGS84</INCLUDE>
-    <INCLUDE>Deviation.SeverityCode</INCLUDE>
-    <INCLUDE>Deviation.SeverityText</INCLUDE>
   </QUERY>
 </REQUEST>"""
 
@@ -69,12 +69,12 @@ def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
 
     for sit in root.findall(".//Situation"):
-        # Get the Situation ID and ModifiedTime (this is the primary identifier)
+        # Get the Situation ID and other situation-level fields
         situation_id = sit.find("Id")
         situation_id_text = situation_id.text.strip() if (situation_id is not None and situation_id.text) else ""
         
-        modified_time = sit.find("ModifiedTime")
-        modified_time_text = modified_time.text.strip() if (modified_time is not None and modified_time.text) else ""
+        version_time = sit.find("VersionTime")
+        version_time_text = version_time.text.strip() if (version_time is not None and version_time.text) else ""
         
         for dev_idx, dev in enumerate(sit.findall("Deviation")):
             def text(tag: str) -> str:
@@ -90,17 +90,17 @@ def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
             rows.append({
                 "incident_id": incident_id,
                 "message": text("Message"),
-                "message_type": text("MessageType"),
-                "location_descriptor": "",  # Not available in this schema
+                "message_type": text("MessageCode"),  # Using MessageCode as shown in forum response
+                "location_descriptor": text("LocationDescriptor"),
                 "road_number": text("RoadNumber"),
                 "county_name": "",  # Not available in this schema
                 "county_no": text("CountyNo"),
                 "start_time_utc": text("StartTime"),
                 "end_time_utc": text("EndTime"),
-                "modified_time_utc": modified_time_text,
+                "modified_time_utc": version_time_text,
                 "latitude": lat,
                 "longitude": lon,
-                "status": text("SeverityText"),  # Using SeverityText instead of Status
+                "status": text("IconId"),  # Using IconId as status indicator
             })
 
     return rows
