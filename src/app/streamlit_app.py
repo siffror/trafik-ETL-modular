@@ -396,9 +396,8 @@ else:
             initial_view_state=pdk.ViewState(latitude=lat_center, longitude=lon_center, zoom=zoom),
             map_style=style_map.get(map_style, "light"),
             tooltip=tooltip,
-        ),
-        use_container_width=True,
-    )
+        )
+        st.pydeck_chart(deck)
 
 # ---------------------- TABELL ----------------------
 st.subheader(f"Senaste händelser (max {max_rows} rader)")
@@ -412,7 +411,7 @@ if not f_sorted.empty:
     for c in ["start_time_utc","end_time_utc","modified_time_utc"]:
         table[c] = pd.to_datetime(table[c], utc=True, errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    st.dataframe(table.rename(columns={"county_display": "county"}), use_container_width=True)
+    st.dataframe(table.rename(columns={"county_display": "county"}))
 else:
     st.info("Ingen data att visa i tabellen.")
 
@@ -430,7 +429,8 @@ if not f.empty:
         labels={"date": "Datum", "count": "Antal händelser"},
         title="Utveckling av händelser över tid"
     )
-    st.plotly_chart(fig_trend, use_container_width=True)
+    st.plotly_chart(fig_trend, config={"displayModeBar": True, "scrollZoom": True})
+
 else:
     st.info("Ingen data att visa i tidsserien.")
 
@@ -444,6 +444,7 @@ if not f.empty and "message_type" in f.columns:
         text="Antal", title="Fördelning av händelsetyper"
     )
     fig_types.update_traces(textposition="outside")
-    st.plotly_chart(fig_types, use_container_width=True)
+    st.plotly_chart(fig_types, config={"displayModeBar": True, "scrollZoom": True})
+
 else:
     st.info("Ingen data att visa för händelsetyper.")
