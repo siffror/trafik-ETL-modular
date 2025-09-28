@@ -18,29 +18,40 @@ def _require_api_key() -> str:
         raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
     return key
 
-def _build_query_xml(days_back: int = 1) -> str:
-    """Build minimal TRV XML query (adjust to your schema)."""
-    since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def build_trv_payload(api_key: str, days_back: int = 1) -> str:
+    since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%S")
     return f"""<REQUEST>
-  <LOGIN authenticationkey="{{API_KEY}}"/>
+  <LOGIN authenticationkey="{api_key}" />
   <QUERY objecttype="Situation" schemaversion="1">
     <FILTER>
-      <GT name="StartTime" value="{since}"/>
+      <OR>
+        <GT name="Deviation.StartTime" value="{since}" />
+        <GT name="CreationTime" value="{since}" />
+        <GT name="LastUpdateTime" value="{since}" />
+      </OR>
     </FILTER>
+
+    <!-- Situation-level fält -->
     <INCLUDE>Id</INCLUDE>
-    <INCLUDE>StartTime</INCLUDE>
-    <INCLUDE>EndTime</INCLUDE>
-    <INCLUDE>ModifiedTime</INCLUDE>
-    <INCLUDE>CountyNo</INCLUDE>
-    <INCLUDE>CountyName</INCLUDE>
-    <INCLUDE>Message</INCLUDE>
-    <INCLUDE>MessageType</INCLUDE>
-    <INCLUDE>RoadNumber</INCLUDE>
-    <INCLUDE>LocationDescriptor</INCLUDE>
-    <INCLUDE>Status</INCLUDE>
-    <INCLUDE>Geometry.WGS84</INCLUDE>
+    <INCLUDE>CreationTime</INCLUDE>
+    <INCLUDE>LastUpdateTime</INCLUDE>
+
+    <!-- Deviation-level fält -->
+    <INCLUDE>Deviation.Id</INCLUDE>
+    <INCLUDE>Deviation.Message</INCLUDE>
+    <INCLUDE>Deviation.MessageCode</INCLUDE>
+    <INCLUDE>Deviation.MessageType</INCLUDE>
+    <INCLUDE>Deviation.SeverityText</INCLUDE>
+    <INCLUDE>Deviation.StartTime</INCLUDE>
+    <INCLUDE>Deviation.EndTime</INCLUDE>
+    <INCLUDE>Deviation.LocationDescriptor</INCLUDE>
+    <INCLUDE>Deviation.RoadNumber</INCLUDE>
+    <INCLUDE>Deviation.CountyNo</INCLUDE>
+    <INCLUDE>Deviation.Geometry.WGS84</INCLUDE>
   </QUERY>
 </REQUEST>"""
+
 
 def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
     """Parse TRV XML into list of dicts (adapt tags to your schema)."""
@@ -106,8 +117,8 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
     client = TRVClient(api_key=key, base_url=url, timeout=30)
 
     # Build payload and call API
-    payload_xml = _build_query_xml(days_back=days_back).replace("{API_KEY}", key)
-    xml_text = client.post(payload_xml)  # TRVClient.post returns XML text
+    payload_xml = build_trv_payload(api_key, days_back)
+    xml_text = client.post(payload_xml)
 
     # Parse XML → rows
     rows = _parse_xml(xml_text)
