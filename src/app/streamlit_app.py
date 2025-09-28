@@ -388,8 +388,9 @@ else:
             map_style=style_map.get(map_style, "light"),
             tooltip=tooltip,
         ),
-        width="stretch"=True,
+        width="stretch",
     )
+
 
 # ---------------------- TABELL ----------------------
 st.subheader(f"Senaste händelser (max {max_rows} rader)")
