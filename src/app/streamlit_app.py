@@ -15,9 +15,16 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# ===================== APP CONFIG =====================
-st.set_page_config(page_title="TRV Incidents Dashboard", layout="wide")
-DB_PATH = os.getenv("TRAFIK_DB_PATH", "trafik.db")
+# Var ligger trafik.db? Defaulta till repo-roten.
+DB_PATH = os.getenv("TRAFIK_DB_PATH", str(ROOT / "trafik.db"))
+
+def _connect_ro(db_path: str):
+    """Open SQLite read-only så vi inte skapar tom fil av misstag."""
+    if not os.path.exists(db_path):
+        st.error(f"Hittar inte databasen: {db_path}. Kör ETL-jobbet eller sätt TRAFIK_DB_PATH.")
+        st.stop()
+    # read-only via URI – skapar inte fil om den saknas
+    return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
 
 # ===================== i18n (sv/en) =====================
 LANG = {
@@ -235,14 +242,43 @@ def load_data(db_path: str) -> pd.DataFrame:
 
     return df
 
-df = load_data(DB_PATH)
+@st.cache_data(ttl=300)
+def load_data():
+    con = _connect_ro(DB_PATH)
+    query = """
+        SELECT incident_id, message, message_type, location_descriptor,
+               road_number, county_name, county_no,
+               start_time_utc, end_time_utc, modified_time_utc,
+               latitude, longitude, status
+        FROM incidents
+        WHERE start_time_utc > datetime('now', '-30 day')
+    """
+    try:
+        df = pd.read_sql_query(query, con)  # ingen parse_dates här
+    except sqlite3.OperationalError as e:
+        con.close()
+        st.error("Tabellen 'incidents' saknas i databasen. Kör ETL-jobbet så att tabellen skapas och fylls.")
+        st.stop()
+    finally:
+        con.close()
 
-# visa radantal i sidopanel (senaste 30 dagar om kolumn finns)
-if not df.empty and "start_time_utc" in df.columns and pd.api.types.is_datetime64tz_dtype(df["start_time_utc"]):
-    last30 = (df["start_time_utc"] >= (pd.Timestamp.utcnow().tz_localize("UTC") - pd.Timedelta(days=30))).sum()
-    st.sidebar.write(t("db_rows") + f": {int(last30)}")
-else:
-    st.sidebar.write(t("db_rows") + ": 0")
+    # Tidskolumner => UTC (släcker FutureWarning)
+    for c in ["start_time_utc", "end_time_utc", "modified_time_utc"]:
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], utc=True, errors="coerce")
+
+    # Övriga dtypes
+    if "county_no" in df.columns:
+        df["county_no"] = pd.to_numeric(df["county_no"], errors="coerce").astype("Int64")
+    for col in ["latitude", "longitude"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in ["incident_id","message","message_type","location_descriptor","road_number","county_name","status"]:
+        if col in df.columns:
+            df[col] = df[col].astype("string").str.strip()
+
+    return df
+
 
 # ===================== TITLE =====================
 st.title(t("app_title"))
