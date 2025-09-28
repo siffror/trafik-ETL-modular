@@ -3,7 +3,7 @@
 import os
 import time
 import sqlite3
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 from xml.etree import ElementTree as ET
@@ -19,7 +19,7 @@ BASE_URL = os.getenv(
 )
 
 # -----------------------------------------------------------
-# Hjälpare
+# Hjälpfunktioner
 # -----------------------------------------------------------
 def _require_api_key() -> str:
     key = (os.getenv("TRAFIKVERKET_API_KEY") or "").strip()
@@ -29,10 +29,10 @@ def _require_api_key() -> str:
 
 
 def _extract_lat_lon(wgs84: str) -> Tuple[Optional[float], Optional[float]]:
-    """Extrahera (lat, lon) ur 'POINT (lon lat)'."""
+    """Extraherar (lat, lon) ur 'POINT (lon lat)'. Misslyckas tyst till (None, None)."""
     try:
-        if "POINT" in wgs84:
-            coords = wgs84[wgs84.find("(") + 1 : wgs84.find(")")]
+        if wgs84 and "POINT" in wgs84:
+            coords = wgs84[wgs84.find("(") + 1 : wgs84.find(")")].strip()
             parts = coords.split()
             if len(parts) == 2:
                 lon = float(parts[0])
@@ -44,15 +44,15 @@ def _extract_lat_lon(wgs84: str) -> Tuple[Optional[float], Optional[float]]:
 
 
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Sätt dtypes som Streamlit-appen förväntar sig."""
+    """Sätter förväntade dtypes och städar text."""
     if "county_no" in df.columns:
         df["county_no"] = pd.to_numeric(df["county_no"], errors="coerce").astype("Int64")
 
-    for col in ["latitude", "longitude"]:
+    for col in ("latitude", "longitude"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    text_cols = [
+    text_cols = (
         "incident_id",
         "message",
         "message_type",
@@ -60,7 +60,7 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
         "road_number",
         "county_name",
         "status",
-    ]
+    )
     for col in text_cols:
         if col in df.columns:
             df[col] = df[col].astype("string").str.strip()
@@ -69,26 +69,24 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # -----------------------------------------------------------
-# TRV payload + XML-parsning
+# TRV: payload & XML-parsning
 # -----------------------------------------------------------
 def build_trv_payload(api_key: str, days_back: int = 1) -> str:
     """
-    Bygg giltig TRV-XML:
-    - Filtrera på Deviation.StartTime + fallback Situation.CreationTime/LastUpdateTime.
-    - Inkludera fält vi använder i app/databas.
+    Giltig TRV-XML för Situation/Deviation:
+    - Filter: Deviation.StartTime samt Situation.CreationTime/LastUpdateTime
+    - Include: fält på både Situation- och Deviation-nivå som vi använder
     """
-    since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime(
-        "%Y-%m-%dT%H:%M:%S"
-    )
+    since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%S")
 
     return f"""<REQUEST>
-  <LOGIN authenticationkey="{api_key}" />
+  <LOGIN authenticationkey="{api_key}"/>
   <QUERY objecttype="Situation" schemaversion="1">
     <FILTER>
       <OR>
-        <GT name="Deviation.StartTime" value="{since}" />
-        <GT name="CreationTime" value="{since}" />
-        <GT name="LastUpdateTime" value="{since}" />
+        <GT name="Deviation.StartTime" value="{since}"/>
+        <GT name="CreationTime" value="{since}"/>
+        <GT name="LastUpdateTime" value="{since}"/>
       </OR>
     </FILTER>
 
@@ -112,13 +110,12 @@ def build_trv_payload(api_key: str, days_back: int = 1) -> str:
 </REQUEST>"""
 
 
-def _parse_xml(xml_text: str) -> List[Dict]:
+def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
     """
-    Parsar Situation/Deviation till en platt lista av dicts
-    med de fält som vår DB/Streamlit använder.
+    Parsar till en platt lista: en rad per Deviation (barn till Situation).
     """
     root = ET.fromstring(xml_text)
-    rows: List[Dict] = []
+    rows: List[Dict[str, Any]] = []
 
     for situation in root.findall(".//Situation"):
         situation_id = (situation.findtext("Id") or "").strip()
@@ -126,38 +123,31 @@ def _parse_xml(xml_text: str) -> List[Dict]:
         last_update = (situation.findtext("LastUpdateTime") or "").strip()
 
         for dev in situation.findall("Deviation"):
-            # Deviation-fält
-            dev_id = (dev.findtext("Id") or "").strip()
-            msg = (dev.findtext("Message") or "").strip()
-            msg_type = (dev.findtext("MessageType") or "").strip()
-            loc_desc = (dev.findtext("LocationDescriptor") or "").strip()
-            road_no = (dev.findtext("RoadNumber") or "").strip()
-            county_no = (dev.findtext("CountyNo") or "").strip()
-            start_time = (dev.findtext("StartTime") or "").strip()
-            end_time = (dev.findtext("EndTime") or "").strip()
-            status = (dev.findtext("Status") or "").strip()
+            def dtext(path: str) -> str:
+                val = dev.findtext(path)
+                return val.strip() if val else ""
 
-            wgs84 = (dev.findtext("Geometry/WGS84") or "").strip()
+            wgs84 = dtext("Geometry/WGS84")
             lat, lon = _extract_lat_lon(wgs84)
 
-            # Primärnyckel: Deviation.Id (stabilt för en händelse)
-            incident_id = dev_id or f"{situation_id}:{start_time}"
+            dev_id = dtext("Id")
+            incident_id = dev_id or f"{situation_id}:{dtext('StartTime')}"
 
             rows.append(
                 {
                     "incident_id": incident_id,
-                    "message": msg,
-                    "message_type": msg_type,
-                    "location_descriptor": loc_desc,
-                    "road_number": road_no,
-                    "county_name": "",  # TRV returnerar CountyNo; vill man ha namn krävs egen mapping
-                    "county_no": county_no,
-                    "start_time_utc": start_time or creation,
-                    "end_time_utc": end_time,
+                    "message": dtext("Message"),
+                    "message_type": dtext("MessageType"),
+                    "location_descriptor": dtext("LocationDescriptor"),
+                    "road_number": dtext("RoadNumber"),
+                    "county_name": "",  # CountyNo -> namn kräver egen mappingtabell
+                    "county_no": dtext("CountyNo"),
+                    "start_time_utc": dtext("StartTime") or creation,
+                    "end_time_utc": dtext("EndTime"),
                     "modified_time_utc": last_update,
                     "latitude": lat,
                     "longitude": lon,
-                    "status": status,
+                    "status": dtext("Status"),
                 }
             )
 
@@ -165,11 +155,11 @@ def _parse_xml(xml_text: str) -> List[Dict]:
 
 
 # -----------------------------------------------------------
-# Publik ETL-funktion
+# Publik ETL
 # -----------------------------------------------------------
 def run_etl(db_path: str, days_back: int = 1) -> Dict[str, int]:
     """
-    Hämtar från TRV, parsar XML, uppdaterar SQLite och returnerar en summering.
+    Hämtar XML från TRV, parsar, upsertar till SQLite och returnerar en summering.
     """
     t0 = time.time()
 
@@ -179,14 +169,11 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, int]:
 
     client = TRVClient(api_key=api_key, base_url=url, timeout=30)
 
-    # 1) Bygg payload och hämta XML
+    # 1) Hämta XML
     payload_xml = build_trv_payload(api_key=api_key, days_back=days_back)
-    print("=== DEBUG Payload ===")
-    print(payload_xml)
-    print("=== END DEBUG ===")
     xml_text = client.post(payload_xml)
-    
-    # 2) XML → rows → DataFrame
+
+    # 2) XML -> DataFrame
     rows = _parse_xml(xml_text)
     df = pd.DataFrame(rows)
     if df.empty:
