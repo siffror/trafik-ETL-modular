@@ -67,7 +67,11 @@ def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
 
     for sit in root.findall(".//Situation"):
-        for dev in sit.findall("Deviation"):
+        # Get the Situation ID (this is the primary identifier)
+        situation_id = sit.find("Id")
+        situation_id_text = situation_id.text.strip() if (situation_id is not None and situation_id.text) else ""
+        
+        for dev_idx, dev in enumerate(sit.findall("Deviation")):
             def text(tag: str) -> str:
                 el = dev.find(tag)
                 return el.text.strip() if (el is not None and el.text) else ""
@@ -75,8 +79,11 @@ def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
             wgs84 = text("Geometry/WGS84")
             lat, lon = _extract_lat_lon(wgs84)
 
+            # Create a unique incident ID by combining situation ID and deviation index
+            incident_id = f"{situation_id_text}_{dev_idx}" if situation_id_text else f"unknown_{dev_idx}"
+
             rows.append({
-                "incident_id": text("Id"),
+                "incident_id": incident_id,
                 "message": text("Message"),
                 "message_type": text("MessageType"),
                 "location_descriptor": text("LocationDescriptor"),
