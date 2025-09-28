@@ -24,22 +24,15 @@ def _build_query_xml(days_back: int = 1) -> str:
     <FILTER>
       <GT name="PublicationTime" value="{since}"/>
     </FILTER>
-
-    <!-- Situation level fields -->
     <INCLUDE>Id</INCLUDE>
     <INCLUDE>PublicationTime</INCLUDE>
-    <INCLUDE>VersionTime</INCLUDE>
-
-    <!-- Deviation fields (based on forum response example) -->
-    <INCLUDE>Deviation.Geometry.WGS84</INCLUDE>
-    <INCLUDE>Deviation.IconId</INCLUDE>
+    <INCLUDE>Deviation.Message</INCLUDE>
     <INCLUDE>Deviation.MessageCode</INCLUDE>
     <INCLUDE>Deviation.RoadNumber</INCLUDE>
-    <INCLUDE>Deviation.LocationDescriptor</INCLUDE>
     <INCLUDE>Deviation.StartTime</INCLUDE>
     <INCLUDE>Deviation.EndTime</INCLUDE>
-    <INCLUDE>Deviation.Message</INCLUDE>
     <INCLUDE>Deviation.CountyNo</INCLUDE>
+    <INCLUDE>Deviation.Geometry.WGS84</INCLUDE>
   </QUERY>
 </REQUEST>"""
 
@@ -69,12 +62,9 @@ def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
 
     for sit in root.findall(".//Situation"):
-        # Get the Situation ID and other situation-level fields
+        # Get the Situation ID
         situation_id = sit.find("Id")
         situation_id_text = situation_id.text.strip() if (situation_id is not None and situation_id.text) else ""
-        
-        version_time = sit.find("VersionTime")
-        version_time_text = version_time.text.strip() if (version_time is not None and version_time.text) else ""
         
         for dev_idx, dev in enumerate(sit.findall("Deviation")):
             def text(tag: str) -> str:
@@ -90,17 +80,17 @@ def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
             rows.append({
                 "incident_id": incident_id,
                 "message": text("Message"),
-                "message_type": text("MessageCode"),  # Using MessageCode as shown in forum response
-                "location_descriptor": text("LocationDescriptor"),
+                "message_type": text("MessageCode"),
+                "location_descriptor": "",  # Not requested in minimal query
                 "road_number": text("RoadNumber"),
-                "county_name": "",  # Not available in this schema
+                "county_name": "",  # Not available
                 "county_no": text("CountyNo"),
                 "start_time_utc": text("StartTime"),
                 "end_time_utc": text("EndTime"),
-                "modified_time_utc": version_time_text,
+                "modified_time_utc": "",  # Not requested in minimal query
                 "latitude": lat,
                 "longitude": lon,
-                "status": text("IconId"),  # Using IconId as status indicator
+                "status": "",  # Not requested in minimal query
             })
 
     return rows
