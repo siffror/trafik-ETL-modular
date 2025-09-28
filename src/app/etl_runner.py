@@ -181,8 +181,11 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, int]:
 
     # 1) Bygg payload och hämta XML
     payload_xml = build_trv_payload(api_key=api_key, days_back=days_back)
+    print("=== DEBUG Payload ===")
+    print(payload_xml)
+    print("=== END DEBUG ===")
     xml_text = client.post(payload_xml)
-
+    
     # 2) XML → rows → DataFrame
     rows = _parse_xml(xml_text)
     df = pd.DataFrame(rows)
