@@ -1,59 +1,180 @@
 # src/app/etl_runner.py
-from __future__ import annotations
-
 import os
 import time
 import sqlite3
-import logging
-from typing import Dict, Any, List
-
 import pandas as pd
-import datetime as dt
+from datetime import datetime, timedelta, timezone
+from xml.etree import ElementTree as ET
+from typing import List, Dict, Any, Tuple, Optional
 
 from src.trv.client import TRVClient
-from src.trv.endpoints import iterate_incidents
 
-# ---------------- Logging ----------------
-log = logging.getLogger("ETL")
-if not log.handlers:
-    logging.basicConfig(
-        format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-        level=logging.INFO,
-    )
+API_KEY  = os.getenv("TRAFIKVERKET_API_KEY", "")
+BASE_URL = os.getenv("TRAFIKVERKET_URL", "https://api.trafikinfo.trafikverket.se/v2/data.xml")
 
-# ---------------- Config ----------------
-API_KEY = os.getenv("TRAFIKVERKET_API_KEY", "")
-BASE_URL = os.getenv(
-    "TRAFIKVERKET_URL",
-    "https://api.trafikinfo.trafikverket.se/v2/data.xml",
-)
+# ---------- XML BUILDERS ----------
 
-# ---------------- Helpers ----------------
+def _iso_z(dt_utc: datetime) -> str:
+    """UTC -> 'YYYY-MM-DDTHH:MM:SSZ'."""
+    if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+    return dt_utc.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def _build_query_xml(days_back: int = 1) -> str:
+    """
+    Valid Situation query:
+    - Filter on Situation-level ModifiedTime (NOT Deviation.*)
+    - Include whole Deviation subtree, then parse in Python.
+    """
+    since = _iso_z(datetime.now(timezone.utc) - timedelta(days=days_back))
+    return f"""<REQUEST>
+  <LOGIN authenticationkey="{{API_KEY}}"/>
+  <QUERY objecttype="Situation" schemaversion="1">
+    <FILTER>
+      <GT name="ModifiedTime" value="{since}"/>
+    </FILTER>
+
+    <!-- Situation fields -->
+    <INCLUDE>Id</INCLUDE>
+    <INCLUDE>ModifiedTime</INCLUDE>
+
+    <!-- Include the entire Deviation node (no dot-paths here) -->
+    <INCLUDE>Deviation</INCLUDE>
+  </QUERY>
+</REQUEST>"""
+
+# ---------- PARSING ----------
+
+def _extract_lat_lon_from_wgs84(wgs84: str) -> Tuple[Optional[float], Optional[float]]:
+    """Parse 'POINT (lon lat)' -> (lat, lon)."""
+    try:
+        if not wgs84:
+            return (None, None)
+        if "POINT" in wgs84:
+            coords = wgs84[wgs84.find("(")+1:wgs84.find(")")].strip()
+            parts = coords.split()
+            if len(parts) == 2:
+                lon = float(parts[0]); lat = float(parts[1])
+                return (lat, lon)
+    except Exception:
+        pass
+    return (None, None)
+
+def _safe_text(node: ET.Element, path: str) -> str:
+    el = node.find(path)
+    return (el.text or "").strip() if (el is not None and el.text) else ""
+
+def _derive_status(start_iso: str, end_iso: str) -> str:
+    """Make 'PÅGÅR'/'KOMMANDE' from times if no Status provided."""
+    try:
+        now = datetime.now(timezone.utc)
+        start = datetime.fromisoformat(start_iso.replace("Z", "+00:00")) if start_iso else None
+        end   = datetime.fromisoformat(end_iso.replace("Z", "+00:00")) if end_iso else None
+        if start and now < start:
+            return "KOMMANDE"
+        if start and (not end or start <= now <= end):
+            return "PÅGÅR"
+    except Exception:
+        pass
+    return ""
+
+def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
+    """
+    Parse Situation payload where each Situation may contain multiple <Deviation>.
+    We flatten each Deviation into one incident row.
+    """
+    rows: List[Dict[str, Any]] = []
+    root = ET.fromstring(xml_text)
+
+    for sit in root.findall(".//Situation"):
+        sit_id  = _safe_text(sit, "Id")
+        modtime = _safe_text(sit, "ModifiedTime")
+
+        # Deviation can be many; if none, skip
+        devs = sit.findall("Deviation")
+        if not devs:
+            continue
+
+        for idx, dev in enumerate(devs):
+            # Try to read nested fields; many payloads contain these
+            dev_id   = _safe_text(dev, "Id")  # may or may not exist
+            msg      = _safe_text(dev, "Message")
+            mtype    = _safe_text(dev, "MessageType")
+            locdesc  = _safe_text(dev, "LocationDescriptor")
+            roadno   = _safe_text(dev, "RoadNumber")
+            countyno = _safe_text(dev, "CountyNo")
+            # CountyName is not always present under Deviation
+            county_name = _safe_text(dev, "CountyName")
+
+            start_ts = _safe_text(dev, "StartTime")
+            end_ts   = _safe_text(dev, "EndTime")
+            status   = _safe_text(dev, "Status") or _derive_status(start_ts, end_ts)
+
+            wgs84 = _safe_text(dev, "Geometry/WGS84")
+            lat, lon = _extract_lat_lon_from_wgs84(wgs84)
+
+            incident_id = dev_id if dev_id else f"{sit_id}:{idx}"
+
+            rows.append({
+                "incident_id": incident_id,
+                "message": msg,
+                "message_type": mtype,
+                "location_descriptor": locdesc,
+                "road_number": roadno,
+                "county_name": county_name,   # may be empty
+                "county_no": countyno,
+                "start_time_utc": start_ts,
+                "end_time_utc": end_ts,
+                "modified_time_utc": modtime,
+                "latitude": lat,
+                "longitude": lon,
+                "status": status,
+            })
+
+    return rows
+
+# ---------- NORMALIZATION & DB ----------
+
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Coerce dtypes till vad Streamlit-appen förväntar sig."""
     if "county_no" in df.columns:
         df["county_no"] = pd.to_numeric(df["county_no"], errors="coerce").astype("Int64")
     for col in ["latitude", "longitude"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-    text_cols = [
-        "incident_id",
-        "message",
-        "message_type",
-        "location_descriptor",
-        "road_number",
-        "county_name",
-        "status",
-    ]
-    for col in text_cols:
+    for col in ["incident_id","message","message_type","location_descriptor","road_number","county_name","status"]:
         if col in df.columns:
             df[col] = df[col].astype("string").str.strip()
-    # Låt datumfält vara str — Streamlit loader gör parse_dates senare.
     return df
 
-def _ensure_schema(con: sqlite3.Connection) -> None:
-    con.execute(
-        """
+# ---------- MAIN ETL ----------
+
+def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
+    t0 = time.time()
+
+    if not API_KEY:
+        raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
+
+    url = BASE_URL or "https://api.trafikinfo.trafikverket.se/v2/data.xml"
+    print(f"[ETL] Using TRV URL: {url}", flush=True)
+
+    client = TRVClient(api_key=API_KEY, base_url=url, timeout=30)
+
+    # Build and call
+    payload_xml = _build_query_xml(days_back=days_back).replace("{API_KEY}", API_KEY)
+    xml_text = client.post(payload_xml)  # returns XML string
+
+    # Parse → rows → DataFrame
+    rows = _parse_xml(xml_text)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return {"rows": 0, "pagar": 0, "kommande": 0, "seconds": round(time.time() - t0, 2)}
+
+    df = _normalize_df(df)
+
+    # Upsert into SQLite
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS incidents (
             incident_id TEXT PRIMARY KEY,
             message TEXT,
@@ -69,114 +190,41 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
             longitude REAL,
             status TEXT
         )
-        """
-    )
+    """)
 
-# ---------------- Main ETL ----------------
-def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
-    """
-    Hämtar Situation->Deviation via iterate_incidents(), flattenar rader,
-    upsert:ar till SQLite och returnerar summary för UI.
-    """
-    t0 = time.time()
-
-    if not API_KEY:
-        raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
-
-    # Klargör i loggar vad som används
-    log.info("🚦 ETL startad • db=`%s` • days_back=`%s` • %s UTC",
-             db_path, days_back, dt.datetime.now(dt.UTC).isoformat(timespec="seconds"))
-    log.info("[ETL] Using TRV URL: %s", BASE_URL)
-
-    # TRV-klient som returnerar XML-text
-    client = TRVClient(api_key=API_KEY, base_url=BASE_URL, timeout=30)
-
-    # Hämta sidor sedan 'since_utc'
-    since_utc = dt.datetime.now(dt.UTC) - dt.timedelta(days=days_back)
-
-    rows: List[Dict[str, Any]] = []
-    for item in iterate_incidents(
-        client=client,
-        since_utc=since_utc,
-        page_size=200,          # kan fintrimmas; endpoints har intern pagination
-        future_days_limit=14,   # hämta upp till 14 dagar framåt
-        max_pages=25,           # skydd mot oändlig paging
-    ):
-        rows.append(item)
-
-    log.info("📥 Hämtat och flattenat %d deviation-rader", len(rows))
-
-    if not rows:
-        elapsed = round(time.time() - t0, 2)
-        log.info("✅ ETL klar • rader=`0` • tid=`%ss` • db=`%s`", elapsed, db_path)
-        return {"rows": 0, "pagar": 0, "kommande": 0, "seconds": elapsed}
-
-    # Bygg DataFrame i den kolumnordning Streamlit använder
-    df = pd.DataFrame(rows)
-    # Säkerställ att alla förväntade kolumner finns
-    for col in [
-        "incident_id", "message", "message_type", "location_descriptor",
-        "road_number", "county_name", "county_no",
-        "start_time_utc", "end_time_utc", "modified_time_utc",
-        "latitude", "longitude", "status",
-    ]:
-        if col not in df.columns:
-            df[col] = pd.NA
-
-    df = df[
-        [
-            "incident_id", "message", "message_type", "location_descriptor",
-            "road_number", "county_name", "county_no",
-            "start_time_utc", "end_time_utc", "modified_time_utc",
-            "latitude", "longitude", "status",
-        ]
+    cols = [
+        "incident_id","message","message_type","location_descriptor","road_number",
+        "county_name","county_no","start_time_utc","end_time_utc","modified_time_utc",
+        "latitude","longitude","status"
     ]
-
-    df = _normalize_df(df)
-    log.info("🧮 Normaliserat → %d rader", len(df))
-
-    # Upsert till SQLite
-    con = sqlite3.connect(db_path)
-    try:
-        _ensure_schema(con)
-        log.info("Schema kontrollerat/skapats")
-
-        cols = [
-            "incident_id","message","message_type","location_descriptor","road_number",
-            "county_name","county_no","start_time_utc","end_time_utc","modified_time_utc",
-            "latitude","longitude","status"
-        ]
-        sql = """
-            INSERT INTO incidents (
-                incident_id,message,message_type,location_descriptor,road_number,
-                county_name,county_no,start_time_utc,end_time_utc,modified_time_utc,
-                latitude,longitude,status
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(incident_id) DO UPDATE SET
-                message=excluded.message,
-                message_type=excluded.message_type,
-                location_descriptor=excluded.location_descriptor,
-                road_number=excluded.road_number,
-                county_name=excluded.county_name,
-                county_no=excluded.county_no,
-                start_time_utc=excluded.start_time_utc,
-                end_time_utc=excluded.end_time_utc,
-                modified_time_utc=excluded.modified_time_utc,
-                latitude=excluded.latitude,
-                longitude=excluded.longitude,
-                status=excluded.status
-        """
-        con.executemany(sql, [tuple(r.get(c) for c in cols) for r in df.to_dict(orient="records")])
-        con.commit()
-        log.info("Data upsertad i SQLite")
-    finally:
-        con.close()
+    sql = """
+        INSERT INTO incidents (
+            incident_id,message,message_type,location_descriptor,road_number,
+            county_name,county_no,start_time_utc,end_time_utc,modified_time_utc,
+            latitude,longitude,status
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(incident_id) DO UPDATE SET
+            message=excluded.message,
+            message_type=excluded.message_type,
+            location_descriptor=excluded.location_descriptor,
+            road_number=excluded.road_number,
+            county_name=excluded.county_name,
+            county_no=excluded.county_no,
+            start_time_utc=excluded.start_time_utc,
+            end_time_utc=excluded.end_time_utc,
+            modified_time_utc=excluded.modified_time_utc,
+            latitude=excluded.latitude,
+            longitude=excluded.longitude,
+            status=excluded.status
+    """
+    cur.executemany(sql, [tuple(r.get(c) for c in cols) for r in df.to_dict(orient="records")])
+    con.commit(); con.close()
 
     pagar = int((df["status"] == "PÅGÅR").sum()) if "status" in df.columns else 0
     kommande = int((df["status"] == "KOMMANDE").sum()) if "status" in df.columns else 0
-    elapsed = round(time.time() - t0, 2)
-
-    log.info("✅ ETL klar • rader=`%d` • PÅGÅR=`%d` • KOMMANDE=`%d` • tid=`%ss` • db=`%s`",
-             len(df), pagar, kommande, elapsed, db_path)
-
-    return {"rows": int(len(df)), "pagar": pagar, "kommande": kommande, "seconds": elapsed}
+    return {
+        "rows": int(len(df)),
+        "pagar": pagar,
+        "kommande": kommande,
+        "seconds": round(time.time() - t0, 2),
+    }
