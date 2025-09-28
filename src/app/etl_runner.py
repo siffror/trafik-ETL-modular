@@ -1,26 +1,86 @@
+# src/app/etl_runner.py
+
 import os
 import time
 import sqlite3
+from typing import Dict, List, Tuple, Optional
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 from xml.etree import ElementTree as ET
-from typing import List, Dict, Any, Tuple
 
 from src.trv.client import TRVClient
 
-# --- Read configuration from environment
-BASE_URL = os.getenv("TRAFIKVERKET_URL", "https://api.trafikinfo.trafikverket.se/v2/data.xml")
+# -----------------------------------------------------------
+# Konfiguration
+# -----------------------------------------------------------
+BASE_URL = os.getenv(
+    "TRAFIKVERKET_URL",
+    "https://api.trafikinfo.trafikverket.se/v2/data.xml",
+)
 
+# -----------------------------------------------------------
+# Hjälpare
+# -----------------------------------------------------------
 def _require_api_key() -> str:
-    """Return API key or raise a clear error if missing."""
-    key = os.getenv("TRAFIKVERKET_API_KEY", "").strip()
+    key = (os.getenv("TRAFIKVERKET_API_KEY") or "").strip()
     if not key:
         raise RuntimeError("TRAFIKVERKET_API_KEY is not set")
     return key
 
 
+def _extract_lat_lon(wgs84: str) -> Tuple[Optional[float], Optional[float]]:
+    """Extrahera (lat, lon) ur 'POINT (lon lat)'."""
+    try:
+        if "POINT" in wgs84:
+            coords = wgs84[wgs84.find("(") + 1 : wgs84.find(")")]
+            parts = coords.split()
+            if len(parts) == 2:
+                lon = float(parts[0])
+                lat = float(parts[1])
+                return lat, lon
+    except Exception:
+        pass
+    return None, None
+
+
+def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Sätt dtypes som Streamlit-appen förväntar sig."""
+    if "county_no" in df.columns:
+        df["county_no"] = pd.to_numeric(df["county_no"], errors="coerce").astype("Int64")
+
+    for col in ["latitude", "longitude"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    text_cols = [
+        "incident_id",
+        "message",
+        "message_type",
+        "location_descriptor",
+        "road_number",
+        "county_name",
+        "status",
+    ]
+    for col in text_cols:
+        if col in df.columns:
+            df[col] = df[col].astype("string").str.strip()
+
+    return df
+
+
+# -----------------------------------------------------------
+# TRV payload + XML-parsning
+# -----------------------------------------------------------
 def build_trv_payload(api_key: str, days_back: int = 1) -> str:
-    since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%S")
+    """
+    Bygg giltig TRV-XML:
+    - Filtrera på Deviation.StartTime + fallback Situation.CreationTime/LastUpdateTime.
+    - Inkludera fält vi använder i app/databas.
+    """
+    since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime(
+        "%Y-%m-%dT%H:%M:%S"
+    )
+
     return f"""<REQUEST>
   <LOGIN authenticationkey="{api_key}" />
   <QUERY objecttype="Situation" schemaversion="1">
@@ -32,106 +92,115 @@ def build_trv_payload(api_key: str, days_back: int = 1) -> str:
       </OR>
     </FILTER>
 
-    <!-- Situation-level fält -->
+    <!-- Situation-level -->
     <INCLUDE>Id</INCLUDE>
     <INCLUDE>CreationTime</INCLUDE>
     <INCLUDE>LastUpdateTime</INCLUDE>
 
-    <!-- Deviation-level fält -->
+    <!-- Deviation-level -->
     <INCLUDE>Deviation.Id</INCLUDE>
     <INCLUDE>Deviation.Message</INCLUDE>
-    <INCLUDE>Deviation.MessageCode</INCLUDE>
     <INCLUDE>Deviation.MessageType</INCLUDE>
-    <INCLUDE>Deviation.SeverityText</INCLUDE>
-    <INCLUDE>Deviation.StartTime</INCLUDE>
-    <INCLUDE>Deviation.EndTime</INCLUDE>
     <INCLUDE>Deviation.LocationDescriptor</INCLUDE>
     <INCLUDE>Deviation.RoadNumber</INCLUDE>
     <INCLUDE>Deviation.CountyNo</INCLUDE>
+    <INCLUDE>Deviation.StartTime</INCLUDE>
+    <INCLUDE>Deviation.EndTime</INCLUDE>
+    <INCLUDE>Deviation.Status</INCLUDE>
     <INCLUDE>Deviation.Geometry.WGS84</INCLUDE>
   </QUERY>
 </REQUEST>"""
 
 
-def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
-    """Parse TRV XML into list of dicts (adapt tags to your schema)."""
+def _parse_xml(xml_text: str) -> List[Dict]:
+    """
+    Parsar Situation/Deviation till en platt lista av dicts
+    med de fält som vår DB/Streamlit använder.
+    """
     root = ET.fromstring(xml_text)
-    rows: List[Dict[str, Any]] = []
-    for node in root.findall(".//Situation"):
-        def text(path: str) -> str:
-            el = node.find(path)
-            return el.text.strip() if (el is not None and el.text) else ""
-        wgs84 = text("Geometry/WGS84")
-        lat, lon = _extract_lat_lon(wgs84)
-        rows.append({
-            "incident_id": text("Id"),
-            "message": text("Message"),
-            "message_type": text("MessageType"),
-            "location_descriptor": text("LocationDescriptor"),
-            "road_number": text("RoadNumber"),
-            "county_name": text("CountyName"),
-            "county_no": text("CountyNo"),
-            "start_time_utc": text("StartTime"),
-            "end_time_utc": text("EndTime"),
-            "modified_time_utc": text("ModifiedTime"),
-            "latitude": lat,
-            "longitude": lon,
-            "status": text("Status"),
-        })
+    rows: List[Dict] = []
+
+    for situation in root.findall(".//Situation"):
+        situation_id = (situation.findtext("Id") or "").strip()
+        creation = (situation.findtext("CreationTime") or "").strip()
+        last_update = (situation.findtext("LastUpdateTime") or "").strip()
+
+        for dev in situation.findall("Deviation"):
+            # Deviation-fält
+            dev_id = (dev.findtext("Id") or "").strip()
+            msg = (dev.findtext("Message") or "").strip()
+            msg_type = (dev.findtext("MessageType") or "").strip()
+            loc_desc = (dev.findtext("LocationDescriptor") or "").strip()
+            road_no = (dev.findtext("RoadNumber") or "").strip()
+            county_no = (dev.findtext("CountyNo") or "").strip()
+            start_time = (dev.findtext("StartTime") or "").strip()
+            end_time = (dev.findtext("EndTime") or "").strip()
+            status = (dev.findtext("Status") or "").strip()
+
+            wgs84 = (dev.findtext("Geometry/WGS84") or "").strip()
+            lat, lon = _extract_lat_lon(wgs84)
+
+            # Primärnyckel: Deviation.Id (stabilt för en händelse)
+            incident_id = dev_id or f"{situation_id}:{start_time}"
+
+            rows.append(
+                {
+                    "incident_id": incident_id,
+                    "message": msg,
+                    "message_type": msg_type,
+                    "location_descriptor": loc_desc,
+                    "road_number": road_no,
+                    "county_name": "",  # TRV returnerar CountyNo; vill man ha namn krävs egen mapping
+                    "county_no": county_no,
+                    "start_time_utc": start_time or creation,
+                    "end_time_utc": end_time,
+                    "modified_time_utc": last_update,
+                    "latitude": lat,
+                    "longitude": lon,
+                    "status": status,
+                }
+            )
+
     return rows
 
-def _extract_lat_lon(wgs84: str) -> Tuple[float, float]:
-    """Extract (lat, lon) from 'POINT (lon lat)'; return (None, None) if not parsable."""
-    try:
-        if "POINT" in wgs84:
-            coords = wgs84[wgs84.find("(")+1:wgs84.find(")")].strip()
-            parts = coords.split()
-            if len(parts) == 2:
-                lon = float(parts[0]); lat = float(parts[1])
-                return lat, lon
-    except Exception:
-        pass
-    return (None, None)
 
-def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Coerce dtypes to what the Streamlit app expects."""
-    if "county_no" in df.columns:
-        df["county_no"] = pd.to_numeric(df["county_no"], errors="coerce").astype("Int64")
-    for col in ["latitude", "longitude"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    for col in ["incident_id","message","message_type","location_descriptor","road_number","county_name","status"]:
-        if col in df.columns:
-            df[col] = df[col].astype("string").str.strip()
-    return df
-
-def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
-    """Fetch from TRV (XML), parse, upsert into SQLite, return summary."""
+# -----------------------------------------------------------
+# Publik ETL-funktion
+# -----------------------------------------------------------
+def run_etl(db_path: str, days_back: int = 1) -> Dict[str, int]:
+    """
+    Hämtar från TRV, parsar XML, uppdaterar SQLite och returnerar en summering.
+    """
     t0 = time.time()
 
-    key = _require_api_key()
-
+    api_key = _require_api_key()
     url = BASE_URL or "https://api.trafikinfo.trafikverket.se/v2/data.xml"
     print(f"[ETL] Using TRV URL: {url}", flush=True)
 
-    client = TRVClient(api_key=key, base_url=url, timeout=30)
+    client = TRVClient(api_key=api_key, base_url=url, timeout=30)
 
-    # Build payload and call API
-    payload_xml = build_trv_payload(api_key, days_back)
+    # 1) Bygg payload och hämta XML
+    payload_xml = build_trv_payload(api_key=api_key, days_back=days_back)
     xml_text = client.post(payload_xml)
 
-    # Parse XML → rows
+    # 2) XML → rows → DataFrame
     rows = _parse_xml(xml_text)
     df = pd.DataFrame(rows)
     if df.empty:
-        return {"rows": 0, "pagar": 0, "kommande": 0, "seconds": round(time.time() - t0, 2)}
+        return {
+            "rows": 0,
+            "pagar": 0,
+            "kommande": 0,
+            "seconds": round(time.time() - t0, 2),
+        }
 
     df = _normalize_df(df)
 
-    # Upsert into SQLite (conflict on primary key incident_id)
+    # 3) Upsert till SQLite
     con = sqlite3.connect(db_path)
     cur = con.cursor()
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS incidents (
             incident_id TEXT PRIMARY KEY,
             message TEXT,
@@ -147,18 +216,29 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
             longitude REAL,
             status TEXT
         )
-    """)
+        """
+    )
 
     cols = [
-        "incident_id","message","message_type","location_descriptor","road_number",
-        "county_name","county_no","start_time_utc","end_time_utc","modified_time_utc",
-        "latitude","longitude","status"
+        "incident_id",
+        "message",
+        "message_type",
+        "location_descriptor",
+        "road_number",
+        "county_name",
+        "county_no",
+        "start_time_utc",
+        "end_time_utc",
+        "modified_time_utc",
+        "latitude",
+        "longitude",
+        "status",
     ]
     sql = """
         INSERT INTO incidents (
-            incident_id,message,message_type,location_descriptor,road_number,
-            county_name,county_no,start_time_utc,end_time_utc,modified_time_utc,
-            latitude,longitude,status
+            incident_id, message, message_type, location_descriptor, road_number,
+            county_name, county_no, start_time_utc, end_time_utc, modified_time_utc,
+            latitude, longitude, status
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(incident_id) DO UPDATE SET
             message=excluded.message,
@@ -174,10 +254,18 @@ def run_etl(db_path: str, days_back: int = 1) -> Dict[str, Any]:
             longitude=excluded.longitude,
             status=excluded.status
     """
-    cur.executemany(sql, [tuple(r.get(c) for c in cols) for r in df.to_dict(orient="records")])
+    cur.executemany(
+        sql, [tuple(r.get(c) for c in cols) for r in df.to_dict(orient="records")]
+    )
     con.commit()
     con.close()
 
     pagar = int((df["status"] == "PÅGÅR").sum()) if "status" in df.columns else 0
     kommande = int((df["status"] == "KOMMANDE").sum()) if "status" in df.columns else 0
-    return {"rows": int(len(df)), "pagar": pagar, "kommande": kommande, "seconds": round(time.time() - t0, 2)}
+
+    return {
+        "rows": int(len(df)),
+        "pagar": pagar,
+        "kommande": kommande,
+        "seconds": round(time.time() - t0, 2),
+    }
