@@ -48,16 +48,26 @@ jobs:
           PY
           test -f trafik.db || { echo "trafik.db missing"; exit 1; }
 
-      - name: Commit & push if changed
+      - name: Commit & push (rebase-safe)
         shell: bash
         run: |
           set -euo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add -f trafik.db
           if git diff --cached --quiet; then
             echo "No changes to commit."
-          else
-            git commit -m "chore: update trafik.db [skip ci]"
-            git push
+            exit 0
           fi
+
+          git commit -m "chore: update trafik.db [skip ci]"
+
+          # Rebase på senaste remote innan push
+          BRANCH="${GITHUB_REF_NAME:-main}"
+          git fetch origin "$BRANCH"
+          git pull --rebase origin "$BRANCH" || true
+
+          # Pusha säkert – skriv inte över nya commits
+          git push --force-with-lease origin HEAD:"$BRANCH"
