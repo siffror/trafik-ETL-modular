@@ -53,31 +53,31 @@ def load_data() -> pd.DataFrame:
         return pd.DataFrame(columns=cols)
 
     # Dtypes
-    for c in ("county_no",):
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
+    if "county_no" in df.columns:
+        df["county_no"] = pd.to_numeric(df["county_no"], errors="coerce").astype("Int64")
     for c in ("latitude","longitude"):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
+    # Tider -> UTC
+    for c in ("start_time_utc","end_time_utc","modified_time_utc"):
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], errors="coerce", utc=True)
+
+    # Textkolumner
     textish = ["incident_id","message","message_type","location_descriptor",
                "road_number","county_name","status"]
     for c in textish:
         if c in df.columns:
             df[c] = df[c].astype("string").str.strip()
 
-    # Tider -> UTC (undvik FutureWarning)
-    for c in ("start_time_utc","end_time_utc","modified_time_utc"):
-        if c in df.columns:
-            df[c] = pd.to_datetime(df[c], errors="coerce", utc=True)
-
     # Fyll länsnamn om saknas -> från county_no
     if "county_name" in df.columns and "county_no" in df.columns:
-        # tomma/NaN som None
-        df["county_name"] = df["county_name"].where(df["county_name"].str.len() > 0, pd.NA)
-        # lägg till county_display = namn eller mappat från county_no
+        cn = df["county_name"].astype("string")
+        # Gör NaN och tomsträng till NA
+        cn = cn.mask(cn.str.len().fillna(0) == 0, pd.NA)
         mapped = df["county_no"].map(lambda x: COUNTY_NAMES.get(int(x)) if pd.notna(x) else None)
-        df["county_display"] = df["county_name"].fillna(mapped).fillna("Okänt län").astype("string")
+        df["county_display"] = cn.fillna(mapped).fillna("Okänt län").astype("string")
     else:
         df["county_display"] = "Okänt län"
 
@@ -96,10 +96,19 @@ with st.sidebar:
     road = st.text_input("Vägnummer (t.ex. E6, 40, 76)", "").strip()
     only_geo = st.checkbox("Endast med koordinater (kartan)", value=False)
 
-    min_dt = df["start_time_utc"].min() if not df.empty else pd.Timestamp.utcnow() - pd.Timedelta(days=7)
-    max_dt = df["start_time_utc"].max() if not df.empty else pd.Timestamp.utcnow()
-    min_date, max_date = (min_dt.tz_localize(None) if getattr(min_dt, "tzinfo", None) else min_dt).date(), \
-                         (max_dt.tz_localize(None) if getattr(max_dt, "tzinfo", None) else max_dt).date()
+    # Gör datumvärdena naiva (utan tz) för date_input
+    if not df.empty:
+        min_dt = df["start_time_utc"].min()
+        max_dt = df["start_time_utc"].max()
+    else:
+        min_dt = pd.Timestamp.utcnow() - pd.Timedelta(days=7)
+        max_dt = pd.Timestamp.utcnow()
+    if getattr(min_dt, "tzinfo", None) is not None:
+        min_dt = min_dt.tz_convert("UTC").tz_localize(None)
+    if getattr(max_dt, "tzinfo", None) is not None:
+        max_dt = max_dt.tz_convert("UTC").tz_localize(None)
+    min_date, max_date = min_dt.date(), max_dt.date()
+
     date_range = st.date_input("Datumintervall", value=(min_date, max_date), min_value=min_date, max_value=max_date)
     if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
         date_from, date_to = date_range
@@ -119,7 +128,7 @@ if not f.empty:
     if county_val:
         f = f[f["county_display"].isin(county_val)]
 
-    # datumfilter (UTC)
+    # datumfilter (allt i UTC)
     start_ts = pd.to_datetime(date_from).tz_localize("UTC")
     end_ts = (pd.to_datetime(date_to) + pd.Timedelta(days=1)).tz_localize("UTC")
     f = f[(f["start_time_utc"] >= start_ts) & (f["start_time_utc"] < end_ts)]
@@ -391,7 +400,6 @@ else:
         width="stretch",
     )
 
-
 # ---------------------- TABELL ----------------------
 st.subheader(f"Senaste händelser (max {max_rows} rader)")
 f_sorted = f.sort_values(by=sort_col, ascending=not sort_desc).head(max_rows) if not f.empty else f
@@ -405,13 +413,6 @@ if not f_sorted.empty:
         table[c] = pd.to_datetime(table[c], utc=True, errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
     st.dataframe(table.rename(columns={"county_display": "county"}), width="stretch")
-else:
-    st.info("Ingen data att visa i tabellen.")
-
-    st.dataframe(
-        f_sorted[show_cols].rename(columns={"county_display": "county"}),
-        width="stretch",
-    )
 else:
     st.info("Ingen data att visa i tabellen.")
 
@@ -429,7 +430,7 @@ if not f.empty:
         labels={"date": "Datum", "count": "Antal händelser"},
         title="Utveckling av händelser över tid"
     )
-    st.plotly_chart(fig_trend, width="stretch"=True)
+    st.plotly_chart(fig_trend, width="stretch")
 else:
     st.info("Ingen data att visa i tidsserien.")
 
@@ -443,6 +444,6 @@ if not f.empty and "message_type" in f.columns:
         text="Antal", title="Fördelning av händelsetyper"
     )
     fig_types.update_traces(textposition="outside")
-    st.plotly_chart(fig_types, width="stretch"=True)
+    st.plotly_chart(fig_types, width="stretch")
 else:
     st.info("Ingen data att visa för händelsetyper.")
