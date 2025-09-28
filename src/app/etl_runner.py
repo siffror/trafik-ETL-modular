@@ -20,24 +20,26 @@ def _build_query_xml(days_back: int = 1) -> str:
     since = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
     return f"""<REQUEST>
   <LOGIN authenticationkey="{{API_KEY}}"/>
-  <QUERY objecttype="Situation" schemaversion="1">
+  <QUERY objecttype="Situation" schemaversion="1.2">
     <FILTER>
       <GT name="PublicationTime" value="{since}"/>
     </FILTER>
 
     <!-- Situation id for primary key -->
     <INCLUDE>Id</INCLUDE>
+    <INCLUDE>ModifiedTime</INCLUDE>
+    <INCLUDE>PublicationTime</INCLUDE>
 
     <!-- Deviation fields (valid under Situation) -->
     <INCLUDE>Deviation.StartTime</INCLUDE>
     <INCLUDE>Deviation.EndTime</INCLUDE>
-    <INCLUDE>Deviation.ModifiedTime</INCLUDE>
     <INCLUDE>Deviation.Message</INCLUDE>
     <INCLUDE>Deviation.MessageType</INCLUDE>
     <INCLUDE>Deviation.RoadNumber</INCLUDE>
-    <INCLUDE>Deviation.LocationDescriptor</INCLUDE>
     <INCLUDE>Deviation.CountyNo</INCLUDE>
     <INCLUDE>Deviation.Geometry.WGS84</INCLUDE>
+    <INCLUDE>Deviation.SeverityCode</INCLUDE>
+    <INCLUDE>Deviation.SeverityText</INCLUDE>
   </QUERY>
 </REQUEST>"""
 
@@ -67,9 +69,12 @@ def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
 
     for sit in root.findall(".//Situation"):
-        # Get the Situation ID (this is the primary identifier)
+        # Get the Situation ID and ModifiedTime (this is the primary identifier)
         situation_id = sit.find("Id")
         situation_id_text = situation_id.text.strip() if (situation_id is not None and situation_id.text) else ""
+        
+        modified_time = sit.find("ModifiedTime")
+        modified_time_text = modified_time.text.strip() if (modified_time is not None and modified_time.text) else ""
         
         for dev_idx, dev in enumerate(sit.findall("Deviation")):
             def text(tag: str) -> str:
@@ -86,16 +91,16 @@ def _parse_xml(xml_text: str) -> List[Dict[str, Any]]:
                 "incident_id": incident_id,
                 "message": text("Message"),
                 "message_type": text("MessageType"),
-                "location_descriptor": text("LocationDescriptor"),
+                "location_descriptor": "",  # Not available in this schema
                 "road_number": text("RoadNumber"),
-                "county_name": text("CountyName"),
+                "county_name": "",  # Not available in this schema
                 "county_no": text("CountyNo"),
                 "start_time_utc": text("StartTime"),
                 "end_time_utc": text("EndTime"),
-                "modified_time_utc": text("ModifiedTime"),
+                "modified_time_utc": modified_time_text,
                 "latitude": lat,
                 "longitude": lon,
-                "status": text("Status"),
+                "status": text("SeverityText"),  # Using SeverityText instead of Status
             })
 
     return rows
