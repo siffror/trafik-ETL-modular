@@ -1,16 +1,16 @@
-name: Trafik ETL   # <- Det här blir namnet som syns i Actions-menyn
+name: Trafik ETL
 
 on:
-  workflow_dispatch: {}      # kör manuellt
+  workflow_dispatch: {}
   schedule:
-    - cron: "0 0 * * *"      # dagligen 00:00 UTC
+    - cron: "0 0 * * *"   # dagligen 00:00 UTC
 
 permissions:
   contents: write
 
 concurrency:
   group: trv-etl
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   run:
@@ -53,10 +53,20 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Bot-identitet
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          BRANCH="${GITHUB_REF_NAME:-main}"
+
+          # Blanda in senaste remote-tip innan commit
+          git fetch --prune origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+
+          # Staga bara db-filen
           git add -f trafik.db
+
+          # Commita bara om något ändrats
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
@@ -64,10 +74,5 @@ jobs:
 
           git commit -m "chore: update trafik.db [skip ci]"
 
-          # Rebase på senaste remote innan push
-          BRANCH="${GITHUB_REF_NAME:-main}"
-          git fetch origin "$BRANCH"
-          git pull --rebase origin "$BRANCH" || true
-
-          # Pusha säkert – skriv inte över nya commits
+          # Pusha säkert (skriver inte över nya commits på remote)
           git push --force-with-lease origin HEAD:"$BRANCH"
