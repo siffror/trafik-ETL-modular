@@ -397,8 +397,9 @@ else:
             map_style=style_map.get(map_style, "light"),
             tooltip=tooltip,
         )
-        st.pydeck_chart(deck)
-    ),
+        st.pydeck_chart(deck),
+    )
+    
 
 # ---------------------- TABELL ----------------------
 st.subheader(f"Senaste händelser (max {max_rows} rader)")
