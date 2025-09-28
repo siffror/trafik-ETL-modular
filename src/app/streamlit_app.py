@@ -474,7 +474,7 @@ if not f_sorted.empty:
     table = f_sorted[show_cols].copy()
     for c in ("start_time_utc","end_time_utc","modified_time_utc"):
         table[c] = pd.to_datetime(table[c], utc=True, errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-    st.dataframe(table.rename(columns={"county_display": "county"}), width="stretch")
+    st.dataframe(table.rename(columns={"county_display": "county"}), use_container_width=True)
 else:
     st.info(t(lang, "no_rows_for_table"))
 
@@ -488,7 +488,7 @@ if not f.empty:
         labels={"date": t(lang,"trend_date"), "count": t(lang,"trend_count")},
         title=t(lang,"trend_title"),
     )
-    st.plotly_chart(fig_trend, width="stretch")
+    st.plotly_chart(fig_trend, use_container_width=True, config={"responsive": True})
 else:
     st.info(t(lang, "no_rows_for_trend"))
 
@@ -502,6 +502,6 @@ if not f.empty and "message_type" in f.columns:
         orientation="h", text=t(lang,"types_count"), title=t(lang,"types_hdr")
     )
     fig_types.update_traces(textposition="outside")
-    st.plotly_chart(fig_types, width="stretch")
+    st.plotly_chart(fig_types, use_container_width=True, config={"responsive": True})
 else:
     st.info(t(lang, "types_none"))
