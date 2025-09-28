@@ -44,7 +44,7 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           from src.app.etl_runner import run_etl
-          print(run_etl("trafik.db", days_back=1))
+          print(run_etl("trafik.db", days_back=30))
           PY
           test -f trafik.db || { echo "trafik.db missing"; exit 1; }
 
