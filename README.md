@@ -32,10 +32,15 @@ The project is built in a modular way to ensure easy usage, maintenance, and fut
   - Table view of the latest incidents  
 
 ---
-> ⚡ **Note on notifications:**  
-> The `utils/notifier.py` module is used for Slack/webhook notifications.  
-> It works locally when a Slack webhook URL is configured in `.env`.  
-> On GitHub Actions, Slack is not configured, but you will still receive build/run notifications via GitHub’s built-in email system.  
+## 🔔 Notifications
+
+The ETL pipeline can send notifications via Slack when running locally.  
+This provides clear logs on when the pipeline starts, how many incidents were fetched, and the result of the normalization process.  
+
+Example Slack notification:
+
+![Slack Notification Example](assets/slack_notifier.png)
+
 ---
 ## 📦 Installation
 ```bash
