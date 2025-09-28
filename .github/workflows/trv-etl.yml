@@ -1,4 +1,4 @@
-name: Update trafik.db
+name: Trafik ETL   # <- Det här blir namnet som syns i Actions-menyn
 
 on:
   workflow_dispatch: {}      # kör manuellt
